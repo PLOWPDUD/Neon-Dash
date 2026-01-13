@@ -1,4 +1,5 @@
 
+
 export type GameState = 'MENU' | 'PLAYING' | 'GAMEOVER' | 'WON' | 'PAUSED';
 
 export type PlayerIconType = 'default' | 'face' | 'creeper' | 'lines' | 'dot' | 'cross';
@@ -7,7 +8,7 @@ export type ShipIconType = 'default' | 'fighter' | 'shark' | 'saucer';
 
 export type WaveIconType = 'default' | 'dart' | 'saw' | 'shuriken';
 
-export type GameMode = 'cube' | 'ship' | 'wave';
+export type GameMode = 'cube' | 'ship' | 'wave' | 'ball';
 
 export interface Player {
   x: number;
@@ -19,7 +20,8 @@ export interface Player {
   isGrounded: boolean;
   isDead: boolean;
   mode: GameMode;
-  isDashing?: boolean; // New dash state
+  isDashing?: boolean;
+  gravityInverted?: boolean;
 }
 
 export interface Camera {
@@ -29,7 +31,7 @@ export interface Camera {
 
 export interface Obstacle {
   id: number;
-  type: 'spike' | 'block' | 'finish' | 'coin' | 'orb' | 'orb_dash' | 'portal_ship' | 'portal_cube' | 'portal_wave';
+  type: 'spike' | 'block' | 'finish' | 'coin' | 'orb' | 'orb_dash' | 'portal_ship' | 'portal_cube' | 'portal_wave' | 'portal_ball';
   x: number;
   y: number; // Y position relative to ground (0 = on ground)
   width: number;
@@ -45,4 +47,14 @@ export interface Particle {
   life: number;
   color: string;
   size: number;
+}
+
+export interface Checkpoint {
+  x: number;
+  y: number;
+  vy: number;
+  rotation: number;
+  mode: GameMode;
+  isDashing: boolean;
+  gravityInverted: boolean;
 }

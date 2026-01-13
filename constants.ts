@@ -1,9 +1,11 @@
 
+
 export const GAME_CONFIG = {
   GRAVITY: 1.4,
   JUMP_FORCE: -16.8,
   MOVE_SPEED: 10.5,
   GROUND_HEIGHT: 120, // Distance from bottom of canvas
+  CEILING_HEIGHT: 600, // Distance from ground (Height of playable area)
   PLAYER_SIZE: 40,
   PARTICLE_COUNT: 20,
   // Ship Physics
@@ -11,6 +13,8 @@ export const GAME_CONFIG = {
   SHIP_LIFT: 1.2, // Applied against gravity when holding
   // Wave Physics
   WAVE_SPEED: 10.5, // Matches move speed for 45 degree angle
+  // Ball Physics
+  BALL_SPEED: 10,
 };
 
 export const COLORS = {
@@ -25,10 +29,11 @@ export const COLORS = {
   GRID: '#1e293b',
   COIN: '#fbbf24', // Gold
   ORB: '#f59e0b', // Amber/Yellow Orb
-  ORB_DASH: '#a855f7', // Purple Dash Orb
+  ORB_DASH: '#22c55e', // Green Dash Orb
   PORTAL_SHIP: '#ec4899', // Pink
   PORTAL_CUBE: '#22c55e', // Green
   PORTAL_WAVE: '#3b82f6', // Blue
+  PORTAL_BALL: '#ef4444', // Red/Orange for Ball
 };
 
 export const PLAYER_COLORS = [
@@ -450,6 +455,178 @@ const LEVEL_7 = [
   { type: 'finish', x: 5200 }
 ];
 
+// LEVEL 8: Cyberpunk (Long Level, All Modes + Dash, 2 Coins)
+const LEVEL_8 = [
+    // --- PART 1: CUBE DASH INTRO (0 - 3000) ---
+    { type: 'block', x: 400, width: 200, y: 0 },
+    { type: 'spike', x: 800 },
+    
+    // Dash Chain Intro
+    { type: 'orb_dash', x: 1000, y: 50 },
+    { type: 'spike', x: 1100, y: 0 },
+    { type: 'spike', x: 1200, y: 0 },
+    { type: 'spike', x: 1300, y: 0 },
+    { type: 'block', x: 1500, width: 300, y: 50 }, // Land high
+
+    { type: 'spike', x: 1600, y: 90 },
+    { type: 'orb', x: 1700, y: 150 }, // Jump over spike
+    { type: 'block', x: 1900, width: 100, y: 0 }, // Drop down
+    
+    { type: 'spike', x: 2200 },
+    { type: 'orb_dash', x: 2300, y: 50 },
+    { type: 'block', x: 2600, width: 200, y: 50 },
+
+    // --- PART 2: SHIP CAVE (3000 - 8000) ---
+    { type: 'portal_ship', x: 3000, y: 100 },
+    
+    { type: 'block', x: 3200, width: 5000, y: 0 }, // Floor
+    { type: 'block', x: 3200, width: 5000, y: 400 }, // Ceiling
+    
+    // Cave stalactites
+    { type: 'block', x: 3500, width: 100, y: 250 },
+    { type: 'block', x: 3800, width: 100, y: 100 },
+    { type: 'block', x: 4100, width: 100, y: 300 },
+    
+    // Mid-air platforms to navigate
+    { type: 'block', x: 4500, width: 300, y: 200 }, 
+    { type: 'spike', x: 4600, y: 240 },
+    
+    // COIN 1: Hidden in a ceiling alcove
+    { type: 'block', x: 5500, width: 100, y: 150 }, // Low wall
+    { type: 'block', x: 5800, width: 800, y: 200 }, // High floor section
+    
+    // The ceiling dip
+    { type: 'block', x: 6000, width: 100, y: 300 }, // Block coming down
+    { type: 'block', x: 6300, width: 100, y: 300 }, // Block coming down
+    // The gap is between y=200 and y=300 (size 100)
+    
+    // Secret passage in the roof
+    { type: 'block', x: 6150, width: 50, y: 380 }, // Tiny block hiding a gap?
+    // Coin placed high up
+    { type: 'coin', x: 6150, y: 350 }, // Requires flying UP into the hole
+
+    { type: 'block', x: 7000, width: 100, y: 150 },
+
+    // --- PART 3: CUBE INTERLUDE (8000 - 10000) ---
+    { type: 'portal_cube', x: 8200, y: 100 },
+    { type: 'block', x: 8200, width: 200, y: 0 },
+    
+    { type: 'spike', x: 8600 },
+    { type: 'spike', x: 8650 },
+    { type: 'block', x: 8800, width: 200, y: 50 },
+    { type: 'orb', x: 9100, y: 100 },
+    { type: 'orb', x: 9300, y: 150 },
+    { type: 'block', x: 9500, width: 200, y: 150 },
+    { type: 'spike', x: 9600, y: 190 },
+
+    // --- PART 4: WAVE TUNNEL (10000 - 16000) ---
+    { type: 'portal_wave', x: 10000, y: 200 },
+    
+    { type: 'block', x: 10200, width: 6000, y: 0 },
+    { type: 'block', x: 10200, width: 6000, y: 350 },
+    
+    // Obstacles
+    { type: 'block', x: 10500, width: 50, y: 175 },
+    { type: 'block', x: 11000, width: 50, y: 175 },
+    { type: 'block', x: 11500, width: 50, y: 100 },
+    { type: 'block', x: 12000, width: 50, y: 250 },
+    
+    { type: 'block', x: 12500, width: 50, y: 175 },
+    
+    // Tight Squeeze
+    { type: 'block', x: 13000, width: 1000, y: 100 }, // Raise floor
+    { type: 'block', x: 13000, width: 1000, y: 250 }, // Lower roof
+    // Gap 150
+    
+    // COIN 2: The Spam V
+    // Standard path is straight
+    // Coin path is a sharp V up into a pocket
+    { type: 'block', x: 14500, width: 100, y: 300 }, // Roof gap opens up here
+    { type: 'spike', x: 14450, y: 250, height: 40 }, // Guard spikes
+    { type: 'spike', x: 14550, y: 250, height: 40 },
+    
+    { type: 'coin', x: 14500, y: 350 }, // High up in the pocket
+
+    // --- PART 5: MIXED FINALE (16000 - 24000) ---
+    { type: 'portal_cube', x: 16500, y: 100 },
+    { type: 'block', x: 16500, width: 500, y: 0 },
+    
+    // Dash into Ship
+    { type: 'orb_dash', x: 17200, y: 50 },
+    { type: 'portal_ship', x: 17500, y: 100 },
+    
+    // Short Ship flight
+    { type: 'block', x: 17500, width: 1000, y: 0 },
+    { type: 'block', x: 17500, width: 1000, y: 400 },
+    { type: 'block', x: 18000, width: 100, y: 200 },
+    
+    // Ship into Wave
+    { type: 'portal_wave', x: 18500, y: 200 },
+    { type: 'block', x: 18800, width: 50, y: 100 },
+    { type: 'block', x: 19100, width: 50, y: 300 },
+    
+    // Wave into Cube Dash Finale
+    { type: 'portal_cube', x: 19500, y: 100 },
+    { type: 'block', x: 19500, width: 200, y: 0 },
+    
+    { type: 'orb_dash', x: 19800, y: 50 },
+    { type: 'orb_dash', x: 20200, y: 100 },
+    { type: 'orb_dash', x: 20600, y: 50 },
+    { type: 'orb_dash', x: 21000, y: 100 },
+    
+    // Final Jumps
+    { type: 'block', x: 21500, width: 100, y: 0 },
+    { type: 'spike', x: 21800 },
+    { type: 'spike', x: 21850 },
+    { type: 'block', x: 22000, width: 500, y: 50 },
+    
+    { type: 'finish', x: 23000 }
+];
+
+// LEVEL 9: Sphere Dynamics (Ball Mode Focus)
+const LEVEL_9 = [
+  { type: 'block', x: 400, width: 200, y: 0 },
+  { type: 'spike', x: 800 },
+  
+  // Enter Ball Mode
+  { type: 'portal_ball', x: 1000, y: 50 },
+  
+  // Basic switches
+  { type: 'block', x: 1200, width: 1000, y: 0 },   // Floor
+  { type: 'block', x: 1200, width: 1000, y: 300 }, // Ceiling
+  
+  { type: 'spike', x: 1400, y: 0 }, // Spike on floor, must click to go up
+  { type: 'spike', x: 1700, y: 260, height: 40 }, // Spike on ceiling, must click to go down
+  { type: 'spike', x: 2000, y: 0 }, // Up again
+  
+  // Mid-air platforms
+  { type: 'block', x: 2400, width: 200, y: 150 }, // Middle platform
+  // Must time the switch to land on this
+  { type: 'spike', x: 2300, y: 0 },
+  { type: 'spike', x: 2300, y: 260 },
+  
+  // Tight Channel
+  { type: 'block', x: 2800, width: 1000, y: 100 }, // Floor raised
+  { type: 'block', x: 2800, width: 1000, y: 250 }, // Ceiling lowered
+  // Gap is 150
+  
+  { type: 'spike', x: 3000, y: 100 }, // Floor spike
+  { type: 'spike', x: 3300, y: 210, height: 40 }, // Ceiling spike (approx)
+  
+  // Coin Route
+  { type: 'block', x: 4000, width: 500, y: 0 },
+  { type: 'block', x: 4000, width: 500, y: 300 },
+  
+  // A tricky timing section
+  { type: 'block', x: 4200, width: 50, y: 150 }, // Pillar in middle
+  { type: 'coin', x: 4225, y: 220 }, // Under the pillar? No, above it
+  
+  { type: 'portal_cube', x: 4600, y: 100 },
+  { type: 'block', x: 4600, width: 200, y: 0 },
+  
+  { type: 'finish', x: 5000 }
+];
+
 export const LEVELS = [
   { id: 1, name: "Stereo Bound", data: LEVEL_1 },
   { id: 2, name: "Orb City", data: LEVEL_2 },
@@ -457,5 +634,7 @@ export const LEVELS = [
   { id: 4, name: "Aerodynamics", data: LEVEL_4 },
   { id: 5, name: "Tsunami", data: LEVEL_5 },
   { id: 6, name: "The Gauntlet", data: LEVEL_6 },
-  { id: 7, name: "Hyperspace", data: LEVEL_7 }
+  { id: 7, name: "Hyperspace", data: LEVEL_7 },
+  { id: 8, name: "Cyberpunk", data: LEVEL_8 },
+  { id: 9, name: "Sphere Dynamics", data: LEVEL_9 }
 ];

@@ -1,14 +1,14 @@
-
 import React, { useRef, useEffect, useCallback } from 'react';
 import { GAME_CONFIG, COLORS } from '../constants';
-import { GameState, Player, Obstacle, Particle, PlayerIconType, ShipIconType, WaveIconType } from '../types';
+import { GameState, Player, Obstacle, Particle, PlayerIconType, ShipIconType, WaveIconType, Checkpoint } from '../types';
 import { audioService } from '../services/audioService';
 
 interface GameEngineProps {
   levelData: any[];
   gameState: GameState;
+  isPracticeMode: boolean;
   onStateChange: (state: GameState) => void;
-  onAttemptChange: (attempt: number) => void;
+  onAttemptChange: (attempt: number | ((prev: number) => number)) => void;
   onProgressChange: (percent: number) => void;
   onCoinCollect: (collected: boolean) => void;
   playerColor: string;
@@ -20,6 +20,7 @@ interface GameEngineProps {
 export const GameEngine: React.FC<GameEngineProps> = ({ 
   levelData,
   gameState: externalGameState,
+  isPracticeMode,
   onStateChange, 
   onAttemptChange, 
   onProgressChange,
@@ -30,52 +31,40 @@ export const GameEngine: React.FC<GameEngineProps> = ({
   waveIcon
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const requestRef = useRef<number>();
+  const requestRef = useRef<number>(0);
   
-  // To avoid stale closures in the game loop, we store the current config in a ref
+  // Refs to track latest props without re-triggering effects
   const configRef = useRef({ color: playerColor, icon: playerIcon, ship: shipIcon, wave: waveIcon });
 
   useEffect(() => {
     configRef.current = { color: playerColor, icon: playerIcon, ship: shipIcon, wave: waveIcon };
   }, [playerColor, playerIcon, shipIcon, waveIcon]);
 
-  // Game State Refs (Mutable for performance)
+  // Game State Refs
   const gameState = useRef<GameState>('MENU');
-  const attempt = useRef<number>(1);
   const isCoinCollected = useRef<boolean>(false);
   const isHoldingInput = useRef<boolean>(false);
+  const isPracticeRef = useRef<boolean>(isPracticeMode);
+  
+  // Checkpoint System
+  const checkpoints = useRef<Checkpoint[]>([]);
+  const autoCheckpointTimer = useRef<number>(0);
+  
   const lastOrbId = useRef<number>(-1);
+  const lastDashOrbId = useRef<number>(-1);
+  const dashTimer = useRef<number>(0);
+  const lastWavePos = useRef<{x: number, y: number} | null>(null);
+  const ballScaleRef = useRef<number>(1); // For ease-in animation
   
-  // Sync external prop state to internal ref
-  useEffect(() => {
-    if (gameState.current !== externalGameState) {
-        gameState.current = externalGameState;
-    }
-  }, [externalGameState]);
-  
-  const player = useRef<Player>({
-    x: 0,
-    y: 0,
-    vy: 0,
-    width: GAME_CONFIG.PLAYER_SIZE,
-    height: GAME_CONFIG.PLAYER_SIZE,
-    rotation: 0,
-    isGrounded: true,
-    isDead: false,
-    mode: 'cube',
-    isDashing: false,
-  });
-  const camera = useRef({ x: 0, y: 0 });
-  const particles = useRef<Particle[]>([]);
-  const obstacles = useRef<Obstacle[]>([]);
-
-  // --- Core Actions (Memoized) ---
+  // --- Core Actions ---
 
   const initLevel = useCallback(() => {
     const obs: Obstacle[] = [];
     let idCounter = 0;
     
-    levelData.forEach((data) => {
+    const dataToLoad = Array.isArray(levelData) ? levelData : [];
+
+    dataToLoad.forEach((data) => {
       obs.push({
         id: idCounter++,
         type: data.type as any,
@@ -88,6 +77,23 @@ export const GameEngine: React.FC<GameEngineProps> = ({
     });
     obstacles.current = obs;
   }, [levelData]);
+
+  const player = useRef<Player>({
+    x: 0,
+    y: 0,
+    vy: 0,
+    width: GAME_CONFIG.PLAYER_SIZE,
+    height: GAME_CONFIG.PLAYER_SIZE,
+    rotation: 0,
+    isGrounded: true,
+    isDead: false,
+    mode: 'cube',
+    isDashing: false,
+    gravityInverted: false
+  });
+  const camera = useRef({ x: 0, y: 0 });
+  const particles = useRef<Particle[]>([]);
+  const obstacles = useRef<Obstacle[]>([]);
 
   const spawnDeathParticles = useCallback((x: number, y: number) => {
     for (let i = 0; i < GAME_CONFIG.PARTICLE_COUNT; i++) {
@@ -131,6 +137,20 @@ export const GameEngine: React.FC<GameEngineProps> = ({
     }
   }, []);
 
+  const spawnCheckpointParticles = useCallback((x: number, y: number) => {
+      for (let i = 0; i < 8; i++) {
+      particles.current.push({
+        x: x,
+        y: y,
+        vx: (Math.random() - 0.5) * 8,
+        vy: (Math.random() - 0.5) * 8,
+        life: 0.8,
+        color: '#22c55e', // Green
+        size: 4,
+      });
+    }
+  }, []);
+
   const spawnShipTrail = useCallback((x: number, y: number) => {
       particles.current.push({
         x: x,
@@ -147,7 +167,7 @@ export const GameEngine: React.FC<GameEngineProps> = ({
       particles.current.push({
         x: x,
         y: y,
-        vx: -2,
+        vx: 0, // Stationary in world space to form a trail
         vy: 0,
         life: 0.4,
         color: configRef.current.color,
@@ -156,707 +176,962 @@ export const GameEngine: React.FC<GameEngineProps> = ({
   }, []);
   
   const spawnDashParticles = useCallback((x: number, y: number) => {
-      // Speed lines
       particles.current.push({
         x: x,
         y: y,
-        vx: -15 - Math.random() * 10, // Fast backward
+        vx: -15 - Math.random() * 10,
         vy: (Math.random() - 0.5) * 2,
         life: 0.4,
         color: COLORS.ORB_DASH,
         size: 2,
       });
   }, []);
+  
+  const spawnBallGravityParticles = useCallback((x: number, y: number) => {
+      for (let i=0; i<6; i++) {
+          particles.current.push({
+            x: x,
+            y: y,
+            vx: (Math.random() - 0.5) * 5,
+            vy: (Math.random() - 0.5) * 5,
+            life: 0.5,
+            color: '#ffffff',
+            size: 3,
+          });
+      }
+  }, []);
+
+  const reset = useCallback(() => {
+      const height = canvasRef.current ? canvasRef.current.height : window.innerHeight;
+      const groundY = height - GAME_CONFIG.GROUND_HEIGHT;
+      const startY = groundY - GAME_CONFIG.PLAYER_SIZE;
+
+      player.current = {
+        x: 0,
+        y: startY,
+        vy: 0,
+        width: GAME_CONFIG.PLAYER_SIZE,
+        height: GAME_CONFIG.PLAYER_SIZE,
+        rotation: 0,
+        isGrounded: true,
+        isDead: false,
+        mode: 'cube',
+        isDashing: false,
+        gravityInverted: false
+      };
+      camera.current = { x: 0, y: 0 };
+      particles.current = [];
+      // Only clear checkpoints if we are doing a full reset (not respawning)
+      if (!isPracticeRef.current) {
+          checkpoints.current = [];
+      } else {
+          checkpoints.current = [];
+      }
+      
+      isCoinCollected.current = false;
+      onCoinCollect(false);
+      lastOrbId.current = -1;
+      lastDashOrbId.current = -1;
+      dashTimer.current = 0;
+      lastWavePos.current = null;
+      autoCheckpointTimer.current = 0;
+      ballScaleRef.current = 1;
+      onProgressChange(0);
+      initLevel();
+  }, [initLevel, onCoinCollect, onProgressChange]);
+
+  // Sync level data change and initial mount
+  useEffect(() => {
+    reset();
+  }, [levelData, reset]);
+
+  // Sync external state to ref
+  useEffect(() => {
+    if (gameState.current !== externalGameState) {
+        gameState.current = externalGameState;
+        if (externalGameState === 'MENU') {
+             reset();
+        }
+    }
+  }, [externalGameState, reset]);
+
+  useEffect(() => {
+    isPracticeRef.current = isPracticeMode;
+    if (!isPracticeMode) {
+        checkpoints.current = [];
+    }
+  }, [isPracticeMode]);
+
+  // --- Checkpoint Logic ---
+
+  const createCheckpoint = useCallback(() => {
+      const p = player.current;
+      const cp: Checkpoint = {
+          x: p.x,
+          y: p.y,
+          vy: p.vy,
+          rotation: p.rotation,
+          mode: p.mode,
+          isDashing: p.isDashing || false,
+          gravityInverted: p.gravityInverted || false
+      };
+      checkpoints.current.push(cp);
+      spawnCheckpointParticles(p.x + p.width/2, p.y + p.height/2);
+  }, [spawnCheckpointParticles]);
+
+  const removeLastCheckpoint = useCallback(() => {
+      if (checkpoints.current.length > 0) {
+          checkpoints.current.pop();
+          audioService.playDeath(); // Sound cue for removal
+      }
+  }, []);
+
+  const respawnAtCheckpoint = useCallback(() => {
+      if (checkpoints.current.length === 0) {
+          reset();
+          return;
+      }
+      
+      const cp = checkpoints.current[checkpoints.current.length - 1];
+      const p = player.current;
+      
+      p.x = cp.x;
+      p.y = cp.y;
+      p.vy = cp.vy;
+      p.rotation = cp.rotation;
+      p.mode = cp.mode;
+      p.isDashing = cp.isDashing;
+      p.gravityInverted = cp.gravityInverted;
+      p.isDead = false;
+      p.isGrounded = p.mode === 'cube' ? true : false; 
+      
+      // Reset Camera
+      camera.current.x = p.x - 200;
+      const height = canvasRef.current ? canvasRef.current.height : window.innerHeight;
+      const targetCamY = Math.min(0, p.y - height * 0.6);
+      camera.current.y = targetCamY;
+      
+      // Reset State helpers
+      isHoldingInput.current = false;
+      lastOrbId.current = -1;
+      lastDashOrbId.current = -1;
+      lastWavePos.current = null;
+      ballScaleRef.current = 1;
+      
+  }, [reset]);
 
   const die = useCallback(() => {
     if (player.current.isDead) return;
-    player.current.isDead = true;
-    gameState.current = 'GAMEOVER';
-    onStateChange('GAMEOVER');
+    
     audioService.playDeath();
     spawnDeathParticles(player.current.x + player.current.width/2, player.current.y + player.current.height/2);
-  }, [onStateChange, spawnDeathParticles]);
+
+    if (isPracticeRef.current) {
+        // Practice Mode: Instant Respawn
+        player.current.isDead = true; // Briefly dead for particles
+        setTimeout(() => {
+             respawnAtCheckpoint();
+        }, 100);
+    } else {
+        // Normal Mode: Game Over
+        player.current.isDead = true;
+        gameState.current = 'GAMEOVER';
+        onStateChange('GAMEOVER');
+    }
+  }, [onStateChange, spawnDeathParticles, respawnAtCheckpoint]);
 
   const win = useCallback(() => {
-      if (gameState.current === 'WON') return;
-      gameState.current = 'WON';
-      onStateChange('WON');
-      audioService.playWin();
-  }, [onStateChange]);
-
-  const collectCoin = useCallback((obs: Obstacle) => {
-      if (obs.collected) return;
-      obs.collected = true;
-      isCoinCollected.current = true;
-      onCoinCollect(true);
-      audioService.playCoin();
-      spawnCoinParticles(obs.x + obs.width/2, (canvasRef.current?.height || 0) - GAME_CONFIG.GROUND_HEIGHT - obs.y - obs.height/2);
-  }, [onCoinCollect, spawnCoinParticles]);
-
-  const resetGame = useCallback(() => {
-    player.current = {
-      x: 0,
-      y: 0,
-      vy: 0,
-      width: GAME_CONFIG.PLAYER_SIZE,
-      height: GAME_CONFIG.PLAYER_SIZE,
-      rotation: 0,
-      isGrounded: true,
-      isDead: false,
-      mode: 'cube',
-      isDashing: false,
-    };
-    camera.current.x = 0;
-    camera.current.y = 0;
-    particles.current = [];
-    isCoinCollected.current = false;
-    isHoldingInput.current = false;
-    lastOrbId.current = -1;
-    onCoinCollect(false);
-    
-    initLevel();
-    
-    gameState.current = 'PLAYING';
-    onStateChange('PLAYING');
-  }, [initLevel, onStateChange, onCoinCollect]);
-
-  // Handle Level Data changes
-  useEffect(() => {
-      resetGame();
-      gameState.current = 'MENU';
-      onStateChange('MENU');
-      attempt.current = 1;
-      onAttemptChange(1);
-  }, [levelData, resetGame, onStateChange, onAttemptChange]);
+    if (gameState.current === 'WON') return;
+    gameState.current = 'WON';
+    onStateChange('WON');
+    onProgressChange(100);
+    audioService.playWin();
+  }, [onStateChange, onProgressChange]);
 
 
-  const jump = useCallback(() => {
+  // --- Game Loop ---
+
+  const update = useCallback(() => {
+    if (gameState.current !== 'PLAYING') return;
+
     const p = player.current;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const groundY = canvas.height - GAME_CONFIG.GROUND_HEIGHT;
-
-    // Check for Orbs (Standard Jump Orbs only, Dash Orbs handled in update loop for hold)
-    const activeOrb = obstacles.current.find(obs => {
-        if (obs.type !== 'orb') return false; // Only standard orbs in jump logic
-        
-        const yPos = groundY - obs.y;
-        const obsLeft = obs.x;
-        const obsRight = obs.x + obs.width;
-        const obsTop = yPos - obs.height;
-        const obsBottom = yPos;
-        
-        const pLeft = p.x;
-        const pRight = p.x + p.width;
-        const pTop = p.y;
-        const pBottom = p.y + p.height;
-        
-        return (pRight > obsLeft && pLeft < obsRight && pBottom > obsTop && pTop < obsBottom);
-    });
-
-    if (activeOrb) {
-        if (lastOrbId.current === activeOrb.id) return;
-
-        // Yellow Orb
-        p.vy = GAME_CONFIG.JUMP_FORCE * 1.2;
-        p.isGrounded = false;
-        p.isDashing = false; 
-        lastOrbId.current = activeOrb.id;
-        audioService.playOrb();
-        spawnOrbParticles(activeOrb.x + activeOrb.width/2, groundY - activeOrb.y - activeOrb.height/2, COLORS.ORB);
-        return;
-    }
-
-    // Normal Jump
-    if (p.mode === 'cube' && p.isGrounded) {
-      p.vy = GAME_CONFIG.JUMP_FORCE;
-      p.isGrounded = false;
-      audioService.playJump();
-    }
-  }, [spawnOrbParticles]);
-
-  const handleInputDown = useCallback(() => {
-      if (gameState.current === 'PAUSED') return;
-
-      isHoldingInput.current = true;
-
-      if (gameState.current === 'MENU' || gameState.current === 'GAMEOVER' || gameState.current === 'WON') {
-        if (gameState.current === 'GAMEOVER') {
-            attempt.current += 1;
-            onAttemptChange(attempt.current);
+    
+    // Auto Checkpoint Logic
+    if (isPracticeRef.current && !p.isDead) {
+        autoCheckpointTimer.current++;
+        // Try every 2 seconds (180 frames at 60fps)
+        if (autoCheckpointTimer.current > 180) {
+            let safe = false;
+            // Only checkpoint if 'safe'
+            if (p.mode === 'cube' && p.isGrounded) safe = true;
+            if (p.mode === 'ship' || p.mode === 'wave' || p.mode === 'ball') safe = true; 
+            
+            if (safe) {
+                createCheckpoint();
+                autoCheckpointTimer.current = 0;
+            }
         }
-        resetGame();
-        return;
-      }
-
-      if (gameState.current === 'PLAYING') {
-          if (player.current.mode === 'cube') {
-              jump();
-          }
-      }
-  }, [jump, resetGame, onAttemptChange]);
-
-  const handleInputUp = useCallback(() => {
-      isHoldingInput.current = false;
-  }, []);
-
-  const updateParticles = useCallback(() => {
-    for (let i = particles.current.length - 1; i >= 0; i--) {
-      const part = particles.current[i];
-      part.x += part.vx;
-      part.y += part.vy;
-      part.life -= 0.02;
-      part.size *= 0.95;
-      if (part.life <= 0) {
-        particles.current.splice(i, 1);
-      }
-    }
-  }, []);
-
-  const update = useCallback((canvas: HTMLCanvasElement) => {
-    if (gameState.current === 'PAUSED') return;
-
-    if (gameState.current !== 'PLAYING') {
-      if (gameState.current === 'GAMEOVER' || gameState.current === 'WON') {
-        updateParticles();
-      }
-      return;
     }
 
-    const p = player.current;
+    // Capture previous Y before modification for precise collision detection
+    const prevY = p.y; 
 
-    // Auto-jump if holding input (Cube mode - spam jump)
-    if (p.mode === 'cube' && isHoldingInput.current) {
-        jump();
+    // --- Spam Jump Logic (Cube) ---
+    if (p.mode === 'cube' && isHoldingInput.current && p.isGrounded) {
+         p.vy = GAME_CONFIG.JUMP_FORCE;
+         p.isGrounded = false;
+         audioService.playJump();
     }
-
-    let groundY = canvas.height - GAME_CONFIG.GROUND_HEIGHT;
-
-    // --- PHYSICS ---
+    
+    // 1. Movement X
     p.x += GAME_CONFIG.MOVE_SPEED;
+    
+    // 2. Camera Logic
+    // Horizontal follows player offset
+    camera.current.x = p.x - 200; 
 
-    // Handle Dashing
+    // Vertical follows player center, but clamped to ground
+    const canvasHeight = canvasRef.current?.height || window.innerHeight;
+    const targetCamY = Math.min(0, p.y - canvasHeight * 0.6); // Center player somewhat
+    // Smooth lerp
+    camera.current.y += (targetCamY - camera.current.y) * 0.1;
+
+    // 3. Movement Y & Gravity
+    
+    // DASH MECHANIC
     if (p.isDashing) {
-        p.vy = 0; // No gravity while dashing
+        dashTimer.current -= 1;
+        p.vy = 0; // No gravity during dash
+        p.rotation += 15; // Spin player during dash
         spawnDashParticles(p.x, p.y + p.height/2);
-        p.rotation = p.rotation * 0.8;
         
-        // Stop Dashing if key released
+        // Hold to dash logic
         if (!isHoldingInput.current) {
             p.isDashing = false;
         }
+        lastWavePos.current = null;
     } 
+    // WAVE MODE
+    else if (p.mode === 'wave') {
+        if (isHoldingInput.current) {
+            p.vy = -GAME_CONFIG.WAVE_SPEED;
+            p.rotation = -45;
+        } else {
+            p.vy = GAME_CONFIG.WAVE_SPEED;
+            p.rotation = 45;
+        }
+        p.y += p.vy;
+        
+        // Calculate Rotated Tail Position for Trail
+        const rad = (p.rotation * Math.PI) / 180;
+        const scale = 1.6;
+        const offset = -10 * scale; // Back of the triangle relative to center
+        
+        const cx = p.x + p.width / 2;
+        const cy = p.y + p.height / 2;
+        
+        const tailX = cx + offset * Math.cos(rad);
+        const tailY = cy + offset * Math.sin(rad);
+
+        // Interpolate to fill gaps (makes the trail look solid)
+        if (lastWavePos.current) {
+            const lx = lastWavePos.current.x;
+            const ly = lastWavePos.current.y;
+            const midX = (lx + tailX) / 2;
+            const midY = (ly + tailY) / 2;
+            spawnWaveTrail(midX, midY);
+        }
+        
+        spawnWaveTrail(tailX, tailY);
+        lastWavePos.current = {x: tailX, y: tailY};
+    } 
+    // BALL MODE
+    else if (p.mode === 'ball') {
+        // Animation
+        if (ballScaleRef.current < 1) {
+            ballScaleRef.current += 0.1;
+            if(ballScaleRef.current > 1) ballScaleRef.current = 1;
+        }
+
+        if (p.gravityInverted) {
+            // Going UP
+            p.vy = -GAME_CONFIG.BALL_SPEED;
+        } else {
+            // Going DOWN
+            p.vy = GAME_CONFIG.BALL_SPEED;
+        }
+        
+        p.y += p.vy;
+        
+        // Rotation
+        // Rotate based on direction
+        const rotSpeed = 10;
+        p.rotation += p.gravityInverted ? -rotSpeed : rotSpeed;
+
+        lastWavePos.current = null;
+    }
+    // SHIP MODE
+    else if (p.mode === 'ship') {
+         if (isHoldingInput.current) {
+             p.vy -= GAME_CONFIG.SHIP_LIFT;
+         }
+         p.vy += GAME_CONFIG.SHIP_GRAVITY;
+         p.y += p.vy;
+         
+         // Ship rotation visual
+         p.rotation = p.vy * 2;
+         
+         if (isHoldingInput.current) {
+             spawnShipTrail(p.x, p.y + p.height/2 + 10);
+         }
+         lastWavePos.current = null;
+    } 
+    // CUBE MODE
     else {
-        // Normal Physics
+        p.vy += GAME_CONFIG.GRAVITY;
+        p.y += p.vy;
+        
+        // Rotation for cube
+        if (!p.isGrounded) {
+            p.rotation += 7.5; // Rotate approx 180 degrees per standard jump
+        } else {
+            // Snap to nearest 90
+            const rem = p.rotation % 90;
+            if (rem !== 0) {
+                if (rem > 45) p.rotation += (90 - rem) * 0.2;
+                else p.rotation -= rem * 0.2;
+            }
+        }
+        lastWavePos.current = null;
+    }
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    
+    const groundY = canvas.height - GAME_CONFIG.GROUND_HEIGHT;
+    const ceilingY = groundY - GAME_CONFIG.CEILING_HEIGHT;
+    const playerBottom = p.y + p.height;
+    
+    let onFloor = false;
+    let onCeiling = false;
+
+    // Floor Collision (Global Ground)
+    if (playerBottom >= groundY && p.vy > 0) {
         if (p.mode === 'cube') {
-            p.vy += GAME_CONFIG.GRAVITY;
-            p.y += p.vy;
+            p.y = groundY - p.height;
+            p.vy = 0;
+            p.isGrounded = true;
+        } else if (p.mode === 'ship' || p.mode === 'wave') {
+             // Slide
+             p.y = groundY - p.height;
+             p.vy = 0;
+             p.isGrounded = true;
+        } else if (p.mode === 'ball') {
+            if (!p.gravityInverted) {
+                p.y = groundY - p.height;
+                p.vy = 0;
+                onFloor = true;
+            }
+        }
+    } 
+    
+    // Ceiling Collision (Global Ceiling for Ship/Wave/Ball)
+    if (p.mode === 'ship' || p.mode === 'wave' || (p.mode === 'ball' && p.gravityInverted)) {
+        if (p.y <= ceilingY) {
+            p.y = ceilingY;
+            if (p.vy < 0) p.vy = 0; // Stop upward velocity
             
-            if (!p.isGrounded) {
-                p.rotation += 0.15;
-            } else {
-                const nearest90 = Math.round(p.rotation / (Math.PI / 2)) * (Math.PI / 2);
-                p.rotation = p.rotation * 0.8 + nearest90 * 0.2;
+            // For Ball, this counts as grounded on ceiling
+            if (p.mode === 'ball') {
+                onCeiling = true;
             }
-
-        } else if (p.mode === 'ship') {
-            p.vy += GAME_CONFIG.SHIP_GRAVITY;
-            if (isHoldingInput.current) {
-                p.vy -= GAME_CONFIG.SHIP_LIFT;
-                spawnShipTrail(p.x, p.y + p.height/2);
+            // For Ship/Wave, it's just a barrier
+            if (p.mode === 'wave' || p.mode === 'ship') {
+                 p.isGrounded = true; 
             }
-            if (p.vy > 15) p.vy = 15;
-            if (p.vy < -15) p.vy = -15;
-            p.y += p.vy;
-            const targetRotation = p.vy * 0.05; 
-            p.rotation = p.rotation * 0.9 + targetRotation * 0.1;
-
-        } else if (p.mode === 'wave') {
-            if (isHoldingInput.current) {
-                p.vy = -GAME_CONFIG.WAVE_SPEED;
-                p.rotation = -Math.PI / 4; 
-            } else {
-                p.vy = GAME_CONFIG.WAVE_SPEED;
-                p.rotation = Math.PI / 4; 
-            }
-            p.y += p.vy;
-            spawnWaveTrail(p.x + p.width/2, p.y + p.height/2);
         }
     }
 
-
-    // --- COLLISION ---
-    p.isGrounded = false;
-
-    obstacles.current.forEach(obs => {
-      const yPos = groundY - obs.y;
-
-      // Dash Orb Logic: Moved to update loop for continuous hold detection
-      if (obs.type === 'orb_dash') {
-          const obsLeft = obs.x;
-          const obsRight = obs.x + obs.width;
-          const obsTop = yPos - obs.height;
-          const obsBottom = yPos;
-          
-          if (p.x + p.width > obsLeft && p.x < obsRight && p.y + p.height > obsTop && p.y < obsBottom) {
-              if (isHoldingInput.current) {
-                  if (!p.isDashing) {
-                      p.isDashing = true;
-                      p.vy = 0;
-                      // Snap Y to orb center for clean flight
-                      p.y = yPos - obs.height/2 - p.height/2; 
-                      p.isGrounded = false;
-                      p.rotation = 0;
-                      audioService.playDash();
-                      spawnOrbParticles(obs.x + obs.width/2, yPos - obs.height/2, COLORS.ORB_DASH);
-                  }
-              }
-          }
-          return;
-      }
-
-      if (obs.type === 'coin') {
-          if (obs.collected) return;
-          if (p.x + p.width > obs.x && p.x < obs.x + obs.width &&
-              p.y + p.height > yPos - obs.height && p.y < yPos) {
-              collectCoin(obs);
-          }
-          return;
-      }
-
-      if (obs.type === 'portal_ship' || obs.type === 'portal_cube' || obs.type === 'portal_wave') {
-           if (p.x + p.width > obs.x && p.x < obs.x + obs.width &&
-              p.y + p.height > yPos - obs.height && p.y < yPos) {
-             if (obs.type === 'portal_ship' && p.mode !== 'ship') {
-                 p.mode = 'ship'; p.rotation = 0; p.vy = -5; p.isDashing = false;
-             } else if (obs.type === 'portal_cube' && p.mode !== 'cube') {
-                 p.mode = 'cube'; p.rotation = 0; p.isDashing = false;
-                 p.rotation = Math.round(p.rotation / (Math.PI / 2)) * (Math.PI / 2);
-             } else if (obs.type === 'portal_wave' && p.mode !== 'wave') {
-                 p.mode = 'wave'; p.rotation = 0; p.vy = GAME_CONFIG.WAVE_SPEED; p.isDashing = false;
-             }
-          }
-          return;
-      }
-      
-      if (obs.type === 'orb') return;
-
-      // Block/Spike
-      const obsLeft = obs.x;
-      const obsRight = obs.x + obs.width;
-      const obsTop = yPos - obs.height;
-      const obsBottom = yPos;
-      const pLeft = p.x;
-      const pRight = p.x + p.width;
-      const pBottom = p.y + p.height;
-      const pTop = p.y;
-
-      if (pRight > obsLeft && pLeft < obsRight && pBottom > obsTop && pTop < obsBottom) {
-          if (obs.type === 'spike') {
-              if (p.x + p.width > obs.x + 8 && p.x < obs.x + obs.width - 8 &&
-                  p.y + p.height > yPos - obs.height + 8 && p.y < yPos) {
-                   die();
-              }
-          } else if (obs.type === 'finish') {
-             win();
-          } else if (obs.type === 'block') {
-             const prevBottom = pBottom - p.vy;
-             const tolerance = p.mode === 'wave' ? 20 : 15;
-
-             // Logic for landing vs crashing
-             if (prevBottom <= obsTop + tolerance && p.vy >= 0) {
-                 // Landing
-                 p.y = obsTop - p.height;
-                 p.vy = 0;
-                 p.isGrounded = true;
-                 if (p.mode === 'ship') p.rotation = 0; 
-             } 
-             else if (pTop - p.vy >= obsBottom - tolerance && p.vy < 0) {
-                  // Ceiling
-                  p.y = obsBottom;
-                  p.vy = 0;
-                  if (p.mode === 'wave') die();
-             }
-             else {
-                 // Side impact or inside block
-                 die();
-             }
-          }
-      }
-    });
-
-    // Floor
-    if (p.y + p.height >= groundY && !p.isDead) {
-      if (p.mode === 'wave') {
-          p.y = groundY - p.height;
-      } else {
-          p.y = groundY - p.height;
-          p.vy = 0;
-          p.isGrounded = true;
-          if (p.mode === 'ship') p.rotation = 0;
-      }
+    // Reset grounded for Ball based on current frame collision logic
+    if (p.mode === 'ball') {
+         if (onFloor || onCeiling) {
+             p.isGrounded = true;
+         } else {
+             p.isGrounded = false;
+         }
+    } else {
+        if (p.y < groundY - p.height && p.y > ceilingY) {
+            p.isGrounded = false;
+        }
+    }
+    
+    // Safety check for falling out of world
+    if (p.y > groundY + 100) {
+         die(); 
     }
 
-    // Camera
-    camera.current.x = p.x - canvas.width * 0.25;
-    const playerCenterY = p.y + p.height / 2;
-    const idealY = canvas.height * 0.6; 
-    let targetCamY = idealY - playerCenterY;
-    if (targetCamY < -100) targetCamY = -100; 
-    if (targetCamY > 400) targetCamY = 400; 
-    camera.current.y += (targetCamY - camera.current.y) * 0.1;
+    // 4. Obstacle Logic
+    const playerRect = { l: p.x, r: p.x + p.width, t: p.y, b: p.y + p.height };
+    
+    // Optimize: only check obstacles nearby
+    const visibleObstacles = obstacles.current.filter(o => 
+        o.x + o.width > p.x - 100 && o.x < p.x + 1000
+    );
 
-    const totalDist = obstacles.current[obstacles.current.length - 1]?.x || 1000;
-    onProgressChange(Math.min(100, Math.floor((p.x / totalDist) * 100)));
-
-    updateParticles();
-  }, [die, win, onProgressChange, updateParticles, collectCoin, spawnShipTrail, spawnWaveTrail, spawnDashParticles, spawnOrbParticles, jump]);
-
-  const drawIconDesign = (ctx: CanvasRenderingContext2D, size: number, type: PlayerIconType) => {
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    const s = size;
-    switch (type) {
-        case 'face':
-            ctx.fillRect(s * 0.2, s * 0.2, s * 0.2, s * 0.2);
-            ctx.fillRect(s * 0.6, s * 0.2, s * 0.2, s * 0.2);
-            ctx.fillRect(s * 0.2, s * 0.6, s * 0.6, s * 0.15);
-            break;
-        case 'creeper':
-            ctx.fillRect(s * 0.15, s * 0.2, s * 0.2, s * 0.2);
-            ctx.fillRect(s * 0.65, s * 0.2, s * 0.2, s * 0.2);
-            ctx.fillRect(s * 0.4, s * 0.4, s * 0.2, s * 0.3);
-            ctx.fillRect(s * 0.3, s * 0.55, s * 0.1, s * 0.25);
-            ctx.fillRect(s * 0.6, s * 0.55, s * 0.1, s * 0.25);
-            break;
-        case 'lines':
-             ctx.fillRect(0, s * 0.2, s, s * 0.15);
-             ctx.fillRect(0, s * 0.6, s, s * 0.15);
-             break;
-        case 'dot':
-             ctx.beginPath();
-             ctx.arc(s/2, s/2, s*0.25, 0, Math.PI*2);
-             ctx.fill();
-             break;
-        case 'cross':
-             ctx.beginPath();
-             ctx.moveTo(s*0.2, s*0.2);
-             ctx.lineTo(s*0.8, s*0.8);
-             ctx.moveTo(s*0.8, s*0.2);
-             ctx.lineTo(s*0.2, s*0.8);
-             ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-             ctx.lineWidth = s * 0.15;
-             ctx.stroke();
-             break;
-        case 'default':
-        default:
-            ctx.fillRect(s * 0.25, s * 0.25, s * 0.5, s * 0.5);
-            break;
+    // Calculate level progress
+    if (visibleObstacles.length > 0) {
+        const lastObj = obstacles.current[obstacles.current.length-1];
+        if (lastObj) {
+            const pct = Math.min(100, Math.max(0, (p.x / lastObj.x) * 100));
+            onProgressChange(Math.floor(pct));
+        }
     }
+
+    for (const obs of visibleObstacles) {
+        const obsY = groundY - obs.y - obs.height;
+        const obsRect = { l: obs.x, r: obs.x + obs.width, t: obsY, b: obsY + obs.height };
+
+        let hitX = false;
+        let hitY = false;
+        
+        if (obs.type === 'spike') {
+             hitX = playerRect.r - 8 > obsRect.l && playerRect.l + 8 < obsRect.r;
+             hitY = playerRect.b - 8 > obsRect.t && playerRect.t + 8 < obsRect.b;
+        } else {
+             hitX = playerRect.r > obsRect.l && playerRect.l < obsRect.r;
+             hitY = playerRect.b > obsRect.t && playerRect.t < obsRect.b;
+        }
+
+        if (hitX && hitY) {
+            if (obs.type === 'spike') {
+                if (!p.isDashing) die();
+            }
+            else if (obs.type === 'block') {
+                 const tolerance = 18; 
+                 const wasAbove = prevY + p.height <= obsRect.t + tolerance;
+                 const wasBelow = prevY >= obsRect.b - tolerance;
+
+                 if (wasAbove && p.vy >= 0) {
+                     p.y = obsRect.t - p.height;
+                     p.vy = 0;
+                     p.isGrounded = true;
+                 } else if (wasBelow && p.vy <= 0) {
+                     if (p.mode === 'ball') {
+                         p.y = obsRect.b;
+                         p.vy = 0;
+                         p.isGrounded = true;
+                     } else if (p.mode === 'ship' || p.mode === 'wave') {
+                         p.y = obsRect.b;
+                         if (p.vy < 0) p.vy = 0;
+                     } else {
+                         if (!p.isDashing) die();
+                     }
+                 } else {
+                     if (!p.isDashing) die();
+                 }
+            }
+            else if (obs.type === 'finish') {
+                win();
+            }
+            else if (obs.type === 'coin') {
+                if (!obs.collected) {
+                    obs.collected = true;
+                    isCoinCollected.current = true;
+                    onCoinCollect(true);
+                    audioService.playCoin();
+                    spawnCoinParticles(obs.x + obs.width/2, obsY + obs.height/2);
+                }
+            }
+            else if (obs.type === 'orb' || obs.type === 'orb_dash') {
+                if (isHoldingInput.current) {
+                    if (obs.type === 'orb') {
+                        if (lastOrbId.current !== obs.id) {
+                            p.vy = GAME_CONFIG.JUMP_FORCE * 1.1; 
+                            p.isGrounded = false;
+                            lastOrbId.current = obs.id;
+                            audioService.playOrb();
+                            spawnOrbParticles(obs.x + obs.width/2, obsY + obs.height/2, COLORS.ORB);
+                            if (p.mode === 'ball') {
+                                p.gravityInverted = false;
+                            }
+                        }
+                    } else if (obs.type === 'orb_dash') {
+                         if (lastDashOrbId.current !== obs.id) {
+                            p.isDashing = true;
+                            p.vy = 0;
+                            p.y = obsY + obs.height/2 - p.height/2;
+                            lastDashOrbId.current = obs.id;
+                            audioService.playDash();
+                            spawnOrbParticles(obs.x + obs.width/2, obsY + obs.height/2, COLORS.ORB_DASH);
+                        }
+                    }
+                }
+            }
+            else if (obs.type === 'portal_ship') {
+                if (p.mode !== 'ship') {
+                    p.mode = 'ship';
+                    p.rotation = 0;
+                    p.gravityInverted = false;
+                    spawnOrbParticles(p.x, p.y, COLORS.PORTAL_SHIP);
+                }
+            }
+            else if (obs.type === 'portal_cube') {
+                if (p.mode !== 'cube') {
+                    p.mode = 'cube';
+                    p.rotation = 0;
+                    p.gravityInverted = false;
+                    spawnOrbParticles(p.x, p.y, COLORS.PORTAL_CUBE);
+                }
+            }
+            else if (obs.type === 'portal_wave') {
+                if (p.mode !== 'wave') {
+                    p.mode = 'wave';
+                    p.rotation = 0;
+                    p.gravityInverted = false;
+                    spawnOrbParticles(p.x, p.y, COLORS.PORTAL_WAVE);
+                }
+            }
+            else if (obs.type === 'portal_ball') {
+                if (p.mode !== 'ball') {
+                    p.mode = 'ball';
+                    p.rotation = 0;
+                    p.gravityInverted = false;
+                    spawnOrbParticles(p.x, p.y, COLORS.PORTAL_BALL);
+                }
+            }
+        }
+    }
+
+    for (let i = particles.current.length - 1; i >= 0; i--) {
+        const part = particles.current[i];
+        part.x += part.vx;
+        part.y += part.vy;
+        part.life -= 0.02;
+        if (part.life <= 0) {
+            particles.current.splice(i, 1);
+        }
+    }
+
+  }, [die, win, initLevel, onProgressChange, onCoinCollect, spawnCoinParticles, spawnDashParticles, spawnOrbParticles, spawnShipTrail, spawnWaveTrail, createCheckpoint]);
+
+  const drawCubeVisual = (ctx: CanvasRenderingContext2D, size: number, icon: PlayerIconType, color: string) => {
+        ctx.fillStyle = color;
+        ctx.fillRect(-size/2, -size/2, size, size);
+        ctx.strokeStyle = COLORS.PLAYER_BORDER;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(-size/2, -size/2, size, size);
+        ctx.fillStyle = '#000';
+        
+        if (icon === 'face' || icon === 'default') {
+            ctx.fillRect(-10, -8, 6, 6);
+            ctx.fillRect(4, -8, 6, 6);
+            ctx.fillRect(-10, 4, 20, 4);
+            ctx.fillRect(-10, 2, 4, 4);
+            ctx.fillRect(6, 2, 4, 4);
+        } 
+        else if (icon === 'creeper') {
+            ctx.fillRect(-8, -8, 6, 6);
+            ctx.fillRect(2, -8, 6, 6);
+            ctx.fillRect(-4, -2, 8, 8);
+            ctx.fillRect(-8, 4, 4, 8);
+            ctx.fillRect(4, 4, 4, 8);
+            ctx.fillRect(-4, 8, 8, 4);
+        }
+        else if (icon === 'lines') {
+            ctx.fillStyle = 'rgba(0,0,0,0.3)';
+            ctx.fillRect(-size/2, -5, size, 10);
+            ctx.fillRect(-size/2, -15, size, 5);
+            ctx.fillRect(-size/2, 10, size, 5);
+        }
+        else if (icon === 'dot') {
+            ctx.fillStyle = 'rgba(0,0,0,0.3)';
+            ctx.beginPath();
+            ctx.arc(0, 0, 8, 0, Math.PI*2);
+            ctx.fill();
+        }
+        else if (icon === 'cross') {
+            ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+            ctx.lineWidth = 5;
+            ctx.beginPath();
+            ctx.moveTo(-10, -10);
+            ctx.lineTo(10, 10);
+            ctx.moveTo(10, -10);
+            ctx.lineTo(-10, 10);
+            ctx.stroke();
+        }
   };
 
-  const drawShipChassis = (ctx: CanvasRenderingContext2D, type: ShipIconType, w: number, h: number) => {
-      ctx.fillStyle = '#fff';
-      ctx.beginPath();
-      if (type === 'default') {
-          ctx.moveTo(-w/2 - 10, h/2);
-          ctx.lineTo(w/2 + 15, h/2);
-          ctx.lineTo(w/2 + 5, 0);
-          ctx.lineTo(-w/2 - 5, 0);
-      } else if (type === 'fighter') {
-           ctx.moveTo(-w/2 - 15, h/2);
-           ctx.lineTo(w/2 + 20, h/2);
-           ctx.lineTo(w/2 + 10, -h/4);
-           ctx.lineTo(-w/2, -h/4);
-           // Wing
-           ctx.moveTo(-w/2, h/2);
-           ctx.lineTo(-w/2 - 10, h/2 + 10);
-           ctx.lineTo(0, h/2);
-      } else if (type === 'shark') {
-           ctx.ellipse(0, h/4, w/2 + 10, h/3, 0, 0, Math.PI * 2);
-           // Fin
-           ctx.moveTo(-10, -h/4);
-           ctx.lineTo(0, -h);
-           ctx.lineTo(10, -h/4);
-      } else if (type === 'saucer') {
-          ctx.ellipse(0, h/3, w/2 + 10, h/3, 0, 0, Math.PI); // half circle bottom
-          ctx.lineTo(w/2 + 10, 0);
-          ctx.bezierCurveTo(20, -20, -20, -20, -w/2 - 10, 0);
-      }
-      ctx.closePath();
-      ctx.fill();
-      // Add some detail lines
-      ctx.strokeStyle = '#cbd5e1'; 
-      ctx.lineWidth = 2;
-      ctx.stroke();
-  };
-
-  const drawWaveIcon = (ctx: CanvasRenderingContext2D, type: WaveIconType, w: number, h: number, color: string) => {
-       ctx.fillStyle = color;
-       ctx.beginPath();
-       if (type === 'default') {
-           ctx.moveTo(-w/2, -h/2);
-           ctx.lineTo(w/2, 0);
-           ctx.lineTo(-w/2, h/2);
-       } else if (type === 'dart') {
-           ctx.moveTo(-w/2, -h/2);
-           ctx.lineTo(w/2 + 10, 0);
-           ctx.lineTo(-w/2, h/2);
-           ctx.lineTo(-w/4, 0); 
-       } else if (type === 'saw') {
-           ctx.moveTo(-w/2, -h/2);
-           ctx.lineTo(-w/4, -h/4);
-           ctx.lineTo(0, -h/2);
-           ctx.lineTo(w/4, -h/4);
-           ctx.lineTo(w/2, 0);
-           ctx.lineTo(w/4, h/4);
-           ctx.lineTo(0, h/2);
-           ctx.lineTo(-w/4, h/4);
-           ctx.lineTo(-w/2, h/2);
-       } else if (type === 'shuriken') {
-           ctx.moveTo(0, -h/2 - 5);
-           ctx.lineTo(w/2 + 5, 0);
-           ctx.lineTo(0, h/2 + 5);
-           ctx.lineTo(-w/2 - 5, 0);
-       }
-       ctx.closePath();
-       ctx.fill();
-       ctx.strokeStyle = '#fff';
-       ctx.lineWidth = 2;
-       ctx.stroke();
-  };
-
-  const draw = useCallback((ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
-    ctx.fillStyle = COLORS.BACKGROUND;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    ctx.save();
-    ctx.translate(-camera.current.x, camera.current.y);
-
-    // Grid
-    const gridSize = 100;
-    ctx.strokeStyle = COLORS.GRID;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    const startX = Math.floor(camera.current.x / gridSize) * gridSize;
-    const endX = camera.current.x + canvas.width;
-    const startY = Math.floor(-camera.current.y / gridSize) * gridSize;
-    const endY = canvas.height - camera.current.y;
-    for (let x = startX; x < endX + gridSize; x += gridSize) {
-       ctx.moveTo(x, startY); ctx.lineTo(x, endY);
-    }
-    for (let y = startY; y < endY + gridSize; y += gridSize) {
-        ctx.moveTo(camera.current.x, y); ctx.lineTo(camera.current.x + canvas.width, y);
-    }
-    ctx.stroke();
-
-    const groundY = canvas.height - GAME_CONFIG.GROUND_HEIGHT;
-
-    obstacles.current.forEach(obs => {
-       const yPos = groundY - obs.y;
-       if (obs.type === 'spike') {
-         ctx.fillStyle = COLORS.SPIKE;
-         ctx.beginPath();
-         ctx.moveTo(obs.x, yPos);
-         ctx.lineTo(obs.x + obs.width / 2, yPos - obs.height);
-         ctx.lineTo(obs.x + obs.width, yPos);
-         ctx.closePath();
-         ctx.fill();
-         ctx.fillStyle = 'rgba(0,0,0,0.3)';
-         ctx.beginPath();
-         ctx.moveTo(obs.x + 10, yPos);
-         ctx.lineTo(obs.x + obs.width / 2, yPos - obs.height + 10);
-         ctx.lineTo(obs.x + obs.width - 10, yPos);
-         ctx.closePath();
-         ctx.fill();
-       } else if (obs.type === 'block') {
-         ctx.fillStyle = COLORS.BLOCK;
-         ctx.strokeStyle = COLORS.BLOCK_BORDER;
-         ctx.lineWidth = 2;
-         ctx.fillRect(obs.x, yPos - obs.height, obs.width, obs.height);
-         ctx.strokeRect(obs.x, yPos - obs.height, obs.width, obs.height);
-       } else if (obs.type === 'finish') {
-           ctx.fillStyle = '#10b981';
-           ctx.fillRect(obs.x, 0, 20, canvas.height);
-       } else if (obs.type === 'coin' && !obs.collected) {
-           const cx = obs.x + obs.width/2;
-           const cy = yPos - obs.height/2;
-           const time = Date.now() * 0.005;
-           ctx.save();
-           ctx.translate(cx, cy);
-           ctx.rotate(time);
-           ctx.fillStyle = COLORS.COIN;
-           ctx.beginPath();
-           for (let i = 0; i < 5; i++) {
-               ctx.lineTo(Math.cos((18 + i * 72) * Math.PI / 180) * 20, Math.sin((18 + i * 72) * Math.PI / 180) * 20);
-               ctx.lineTo(Math.cos((54 + i * 72) * Math.PI / 180) * 10, Math.sin((54 + i * 72) * Math.PI / 180) * 10);
-           }
-           ctx.closePath();
-           ctx.fill();
-           ctx.strokeStyle = '#fff';
-           ctx.lineWidth = 2;
-           ctx.stroke();
-           ctx.restore();
-       } else if (obs.type === 'orb' || obs.type === 'orb_dash') {
-           const cx = obs.x + obs.width/2;
-           const cy = yPos - obs.height/2;
-           const isDash = obs.type === 'orb_dash';
-           const orbColor = isDash ? COLORS.ORB_DASH : COLORS.ORB;
-           
-           const pulse = (Math.sin(Date.now() * 0.01) + 1) / 2;
-           ctx.beginPath();
-           ctx.arc(cx, cy, 22 + pulse * 4, 0, Math.PI * 2);
-           ctx.strokeStyle = orbColor;
-           ctx.lineWidth = 2;
-           ctx.stroke();
-           
-           ctx.beginPath();
-           ctx.arc(cx, cy, 15, 0, Math.PI * 2);
-           ctx.fillStyle = orbColor;
-           ctx.fill();
-           
-           if (isDash) {
-               ctx.beginPath();
-               ctx.arc(cx, cy, 8, 0, Math.PI * 2);
-               ctx.fillStyle = '#fff';
-               ctx.fill();
-           }
-
-           ctx.strokeStyle = '#fff';
-           ctx.lineWidth = 2;
-           ctx.stroke();
-       } else if (obs.type === 'portal_ship' || obs.type === 'portal_cube' || obs.type === 'portal_wave') {
-           let portalColor = COLORS.PORTAL_CUBE;
-           if (obs.type === 'portal_ship') portalColor = COLORS.PORTAL_SHIP;
-           if (obs.type === 'portal_wave') portalColor = COLORS.PORTAL_WAVE;
-
-           ctx.fillStyle = portalColor;
-           ctx.fillRect(obs.x, yPos - obs.height, obs.width, obs.height);
-           
-           ctx.shadowColor = portalColor;
-           ctx.shadowBlur = 20;
-           ctx.strokeStyle = '#fff';
-           ctx.lineWidth = 3;
-           ctx.strokeRect(obs.x, yPos - obs.height, obs.width, obs.height);
-           ctx.shadowBlur = 0;
-           
-           ctx.fillStyle = '#fff';
-           if (obs.type === 'portal_ship') {
-                ctx.beginPath(); ctx.moveTo(obs.x + 10, yPos - 10); ctx.lineTo(obs.x + 30, yPos - 20); ctx.lineTo(obs.x + 10, yPos - 30); ctx.fill();
-           } else if (obs.type === 'portal_wave') {
-                ctx.beginPath(); ctx.moveTo(obs.x + 10, yPos - 20); ctx.lineTo(obs.x + 18, yPos - 10); ctx.lineTo(obs.x + 22, yPos - 30); ctx.lineTo(obs.x + 30, yPos - 20); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
-           } else {
-               ctx.fillRect(obs.x + 10, yPos - 30, 20, 20);
-           }
-       }
-    });
-
-    // Ground
-    ctx.fillStyle = COLORS.GROUND;
-    ctx.fillRect(camera.current.x, groundY, canvas.width, canvas.height - groundY + 1000); 
-    ctx.strokeStyle = COLORS.GROUND_LINE;
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(camera.current.x, groundY);
-    ctx.lineTo(camera.current.x + canvas.width, groundY);
-    ctx.stroke();
-
-    // Player
-    if (!player.current.isDead) {
-      const p = player.current;
-      ctx.save();
-      ctx.translate(p.x + p.width/2, p.y + p.height/2);
-      ctx.rotate(p.rotation);
-      
-      // Draw Afterimage when dashing
-      if (p.isDashing) {
-          ctx.save();
-          ctx.translate(-40, 0); 
-          ctx.globalAlpha = 0.5;
-          ctx.fillStyle = COLORS.ORB_DASH;
-          ctx.fillRect(-p.width/2, -p.height/2, p.width, p.height);
-          ctx.restore();
-          
-          ctx.save();
-          ctx.translate(-20, 0);
-          ctx.globalAlpha = 0.8;
-          ctx.fillStyle = COLORS.ORB_DASH;
-          ctx.fillRect(-p.width/2, -p.height/2, p.width, p.height);
-          ctx.restore();
-      }
-
-      if (p.mode === 'ship') {
-          drawShipChassis(ctx, configRef.current.ship, p.width, p.height);
-          ctx.scale(0.7, 0.7);
-          ctx.translate(0, -10);
-      } else if (p.mode === 'wave') {
-          drawWaveIcon(ctx, configRef.current.wave, p.width, p.height, configRef.current.color);
-      }
-
-      if (p.mode !== 'wave') {
-          ctx.fillStyle = configRef.current.color;
-          ctx.fillRect(-p.width/2, -p.height/2, p.width, p.height);
-          ctx.strokeStyle = COLORS.PLAYER_BORDER;
-          ctx.lineWidth = 3;
-          ctx.strokeRect(-p.width/2, -p.height/2, p.width, p.height);
-          ctx.translate(-p.width/2, -p.height/2);
-          drawIconDesign(ctx, p.width, configRef.current.icon);
-      }
-      
-      ctx.restore();
-    }
-
-    // Particles
-    particles.current.forEach(part => {
-      ctx.save();
-      ctx.globalAlpha = part.life;
-      ctx.fillStyle = part.color;
-      ctx.translate(part.x, part.y);
-      ctx.fillRect(-part.size/2, -part.size/2, part.size, part.size);
-      ctx.restore();
-    });
-
-    ctx.restore();
-  }, []);
-
-  const loop = useCallback(() => {
+  const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    if (canvas.width !== window.innerWidth) {
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
+
+    const p = player.current;
+    const cam = camera.current;
+    const width = canvas.width;
+    const height = canvas.height;
+    const groundY = height - GAME_CONFIG.GROUND_HEIGHT;
+    const ceilingY = groundY - GAME_CONFIG.CEILING_HEIGHT;
+
+    ctx.fillStyle = COLORS.BACKGROUND;
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.save();
+    ctx.strokeStyle = COLORS.GRID;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    
+    const gridSize = 100;
+    const offsetX = -(cam.x * 0.5) % gridSize; 
+    const offsetY = -(cam.y * 0.5) % gridSize; 
+    
+    for (let x = offsetX; x < width; x += gridSize) {
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
     }
-    update(canvas);
-    draw(ctx, canvas);
-    requestRef.current = requestAnimationFrame(loop);
+    for (let y = offsetY - gridSize; y < height; y += gridSize) {
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    const groundScroll = -(cam.x) % 100;
+
+    ctx.save();
+    ctx.translate(0, -cam.y);
+    
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.95)';
+    ctx.fillRect(0, ceilingY - 2000, width, 2000); 
+
+    ctx.strokeStyle = COLORS.GROUND_LINE;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(0, ceilingY);
+    ctx.lineTo(width, ceilingY);
+    ctx.stroke();
+
+    ctx.strokeStyle = '#334155';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for(let i=groundScroll; i<width; i+=100) {
+        ctx.moveTo(i, ceilingY);
+        ctx.lineTo(i - 50, ceilingY - 100); 
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(0, -cam.y); 
+    
+    ctx.fillStyle = COLORS.GROUND;
+    ctx.fillRect(0, groundY, width, GAME_CONFIG.GROUND_HEIGHT);
+    ctx.strokeStyle = COLORS.GROUND_LINE;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(0, groundY);
+    ctx.lineTo(width, groundY);
+    ctx.stroke();
+
+    ctx.strokeStyle = '#334155';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for(let i=groundScroll; i<width; i+=100) {
+        ctx.moveTo(i, groundY);
+        ctx.lineTo(i - 50, height); 
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(-cam.x, -cam.y);
+
+    if (isPracticeRef.current) {
+        for (const cp of checkpoints.current) {
+            if (cp.x > cam.x - 50 && cp.x < cam.x + width + 50) {
+                const cpY = cp.y + 20; 
+                ctx.fillStyle = '#22c55e'; 
+                ctx.beginPath();
+                ctx.moveTo(cp.x, cpY - 10);
+                ctx.lineTo(cp.x + 10, cpY);
+                ctx.lineTo(cp.x, cpY + 10);
+                ctx.lineTo(cp.x - 10, cpY);
+                ctx.fill();
+            }
+        }
+    }
+
+    const visibleObstacles = obstacles.current.filter(o => o.x + o.width > cam.x - 200 && o.x < cam.x + width + 200);
+    
+    for (const obs of visibleObstacles) {
+        if (obs.collected) continue;
+        const obsY = groundY - obs.y - obs.height;
+        
+        if (obs.type === 'block') {
+            ctx.fillStyle = COLORS.BLOCK;
+            ctx.fillRect(obs.x, obsY, obs.width, obs.height);
+            ctx.strokeStyle = COLORS.BLOCK_BORDER;
+            ctx.lineWidth = 2;
+            ctx.strokeRect(obs.x, obsY, obs.width, obs.height);
+            ctx.fillStyle = 'rgba(0,0,0,0.2)';
+            ctx.fillRect(obs.x + 4, obsY + 4, obs.width - 8, obs.height - 8);
+        }
+        else if (obs.type === 'spike') {
+            ctx.fillStyle = COLORS.SPIKE;
+            ctx.beginPath();
+            if (obs.height < 0) {
+                 ctx.moveTo(obs.x, obsY);
+                 ctx.lineTo(obs.x + obs.width/2, obsY + Math.abs(obs.height));
+                 ctx.lineTo(obs.x + obs.width, obsY);
+            } else {
+                 ctx.moveTo(obs.x, obsY + obs.height);
+                 ctx.lineTo(obs.x + obs.width/2, obsY);
+                 ctx.lineTo(obs.x + obs.width, obsY + obs.height);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+        else if (obs.type === 'orb') {
+            const cx = obs.x + obs.width/2;
+            const cy = obsY + obs.height/2;
+            ctx.fillStyle = COLORS.ORB;
+            ctx.beginPath();
+            ctx.arc(cx, cy, obs.width/2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(cx, cy, obs.width/2 + 4, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.fillStyle = 'rgba(255,255,255,0.5)';
+            ctx.beginPath();
+            ctx.arc(cx, cy, obs.width/4, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        else if (obs.type === 'orb_dash') {
+            const cx = obs.x + obs.width/2;
+            const cy = obsY + obs.height/2;
+            const r = obs.width/2;
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(cx, cy, r, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.fillStyle = COLORS.ORB_DASH;
+            ctx.beginPath();
+            const arrowSize = r * 0.8;
+            ctx.moveTo(cx - arrowSize/2, cy - arrowSize * 0.7);
+            ctx.lineTo(cx + arrowSize/2, cy);
+            ctx.lineTo(cx - arrowSize/2, cy + arrowSize * 0.7);
+            ctx.lineTo(cx - arrowSize/2 + 10, cy); 
+            ctx.fill();
+        }
+        else if (obs.type === 'coin') {
+            const cx = obs.x + obs.width/2;
+            const cy = obsY + obs.height/2;
+            ctx.fillStyle = COLORS.COIN;
+            ctx.beginPath();
+            ctx.arc(cx, cy, obs.width/2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.fillStyle = '#b45309';
+            ctx.font = 'bold 20px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('C', cx, cy);
+        }
+        else if (obs.type.startsWith('portal')) {
+            const color = obs.type === 'portal_ship' ? COLORS.PORTAL_SHIP :
+                          obs.type === 'portal_cube' ? COLORS.PORTAL_CUBE : 
+                          obs.type === 'portal_ball' ? COLORS.PORTAL_BALL : COLORS.PORTAL_WAVE;
+            ctx.fillStyle = color;
+            ctx.fillRect(obs.x, obsY, obs.width, obs.height);
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.fillRect(obs.x + 10, obsY + 10, obs.width - 20, obs.height - 20);
+        }
+        else if (obs.type === 'finish') {
+             ctx.fillStyle = 'rgba(255,255,255,0.2)';
+             ctx.fillRect(obs.x, 0, 10, height); 
+        }
+    }
+    
+    if (!p.isDead) {
+        ctx.save();
+        ctx.translate(p.x + p.width / 2, p.y + p.height / 2);
+        ctx.rotate((p.rotation * Math.PI) / 180);
+
+        if (p.mode === 'ship') {
+             ctx.scale(1.6, 1.6);
+             const shipType = configRef.current.ship;
+             if (shipType === 'saucer') {
+                 ctx.fillStyle = '#94a3b8'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+                 ctx.beginPath(); ctx.arc(0, -5, 10, Math.PI, 0); ctx.fill(); ctx.stroke();
+                 ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(0, 5, 20, 6, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+                 ctx.save(); ctx.translate(0, -5); ctx.scale(0.35, 0.35); drawCubeVisual(ctx, 40, configRef.current.icon, configRef.current.color); ctx.restore();
+             } 
+             else if (shipType === 'shark') {
+                 ctx.fillStyle = '#94a3b8'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+                 ctx.beginPath(); ctx.moveTo(-20, 0); ctx.quadraticCurveTo(0, -15, 25, 5); ctx.lineTo(20, 10); ctx.lineTo(-15, 10); ctx.closePath(); ctx.fill(); ctx.stroke();
+                 ctx.beginPath(); ctx.moveTo(-5, -8); ctx.lineTo(0, -20); ctx.lineTo(10, -5); ctx.fill(); ctx.stroke();
+                 ctx.save(); ctx.translate(5, 0); ctx.scale(0.3, 0.3); drawCubeVisual(ctx, 40, configRef.current.icon, configRef.current.color); ctx.restore();
+             }
+             else if (shipType === 'fighter') {
+                 ctx.fillStyle = '#fff'; ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 2;
+                 ctx.beginPath(); ctx.moveTo(25, 0); ctx.lineTo(-15, -10); ctx.lineTo(-10, 0); ctx.lineTo(-15, 10); ctx.closePath(); ctx.fill(); ctx.stroke();
+                 ctx.save(); ctx.translate(-2, 0); ctx.scale(0.3, 0.3); drawCubeVisual(ctx, 40, configRef.current.icon, configRef.current.color); ctx.restore();
+             }
+             else {
+                 ctx.fillStyle = '#94a3b8'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+                 ctx.beginPath(); ctx.moveTo(-8, -4); ctx.lineTo(-18, -12); ctx.lineTo(-12, 0); ctx.lineTo(-18, 12); ctx.lineTo(-8, 4); ctx.fill(); ctx.stroke();
+                 ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(0, 0, 15, 8, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+                 ctx.save(); ctx.translate(5, -1); ctx.scale(0.35, 0.35); drawCubeVisual(ctx, 40, configRef.current.icon, configRef.current.color); ctx.restore();
+             }
+        }
+        else if (p.mode === 'wave') {
+             ctx.scale(1.6, 1.6);
+             const waveType = configRef.current.wave;
+             ctx.beginPath();
+             if (waveType === 'dart') {
+                 ctx.moveTo(10, 0); ctx.lineTo(-10, -8); ctx.lineTo(-6, 0); ctx.lineTo(-10, 8);  
+             } 
+             else if (waveType === 'saw') {
+                 ctx.moveTo(10, 0); ctx.lineTo(5, -5); ctx.lineTo(0, -8); ctx.lineTo(-5, -5); ctx.lineTo(-10, -8); ctx.lineTo(-10, 8); ctx.lineTo(-5, 5); ctx.lineTo(0, 8); ctx.lineTo(5, 5);
+             }
+             else if (waveType === 'shuriken') {
+                 ctx.moveTo(10, 0); ctx.lineTo(0, -10); ctx.lineTo(-10, 0); ctx.lineTo(0, 10);
+             }
+             else {
+                 ctx.moveTo(10, 0); ctx.lineTo(-10, -10); ctx.lineTo(-10, 10);
+             }
+             ctx.closePath(); ctx.fillStyle = configRef.current.color; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+        }
+        else if (p.mode === 'ball') {
+            const scale = ballScaleRef.current;
+            ctx.scale(scale, scale);
+            ctx.beginPath(); ctx.arc(0, 0, 20, 0, Math.PI * 2); ctx.fillStyle = configRef.current.color; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+            for(let i=0; i<4; i++) {
+                ctx.save(); ctx.rotate(i * Math.PI/2); ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(0, -12); ctx.lineTo(5, -20); ctx.lineTo(-5, -20); ctx.fill(); ctx.restore();
+            }
+        }
+        else {
+            drawCubeVisual(ctx, p.width, configRef.current.icon, configRef.current.color);
+        }
+        ctx.restore();
+    }
+    
+    if (p.isDashing && !p.isDead) {
+        ctx.save(); ctx.translate(p.x - 20 + p.width/2, p.y + p.height/2); ctx.globalAlpha = 0.5; ctx.fillStyle = configRef.current.color; ctx.fillRect(-20, -20, 40, 40); ctx.restore();
+    }
+
+    for (const part of particles.current) {
+        ctx.globalAlpha = part.life; ctx.fillStyle = part.color; ctx.beginPath();
+        if ((p.mode === 'ship' && part.color === '#fbbf24') || part.color === '#22c55e' || p.mode === 'ball') {
+             ctx.arc(part.x, part.y, part.size, 0, Math.PI * 2);
+        } else {
+             ctx.fillRect(part.x - part.size/2, part.y - part.size/2, part.size, part.size);
+        }
+        ctx.fill();
+    }
+    ctx.globalAlpha = 1.0;
+    ctx.restore(); 
+  }, []);
+
+  const tick = useCallback(() => {
+    update();
+    draw();
+    requestRef.current = requestAnimationFrame(tick);
   }, [update, draw]);
 
   useEffect(() => {
-    initLevel();
-    requestRef.current = requestAnimationFrame(loop);
-    const handleKeyDown = (e: KeyboardEvent) => { if (e.code === 'Space' || e.code === 'ArrowUp') handleInputDown(); };
-    const handleMouseDown = (e: Event) => { if ((e.target as HTMLElement).tagName === 'BUTTON') return; handleInputDown(); };
-    const handleKeyUp = (e: KeyboardEvent) => { if (e.code === 'Space' || e.code === 'ArrowUp') handleInputUp(); };
-    const handleMouseUp = () => { handleInputUp(); };
-
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    window.addEventListener('mousedown', handleMouseDown);
-    window.addEventListener('mouseup', handleMouseUp);
-    window.addEventListener('touchstart', handleMouseDown);
-    window.addEventListener('touchend', handleMouseUp);
-
+    requestRef.current = requestAnimationFrame(tick);
+    const handleResize = () => {
+        if (canvasRef.current) {
+            canvasRef.current.width = window.innerWidth;
+            canvasRef.current.height = window.innerHeight;
+            reset(); // Reset player pos on resize
+        }
+    };
+    window.addEventListener('resize', handleResize);
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-      window.removeEventListener('mousedown', handleMouseDown);
-      window.removeEventListener('mouseup', handleMouseUp);
-      window.removeEventListener('touchstart', handleMouseDown);
-      window.removeEventListener('touchend', handleMouseUp);
+      window.removeEventListener('resize', handleResize);
     };
-  }, [loop, initLevel, handleInputDown, handleInputUp]);
+  }, [tick, reset]);
 
-  return <canvas ref={canvasRef} className="block w-full h-full" />;
+  const handleStart = useCallback(() => {
+      if (gameState.current === 'MENU' || gameState.current === 'GAMEOVER' || gameState.current === 'WON') {
+          if (gameState.current === 'GAMEOVER' || gameState.current === 'WON') {
+               reset();
+               onAttemptChange(prev => prev + 1);
+          }
+          gameState.current = 'PLAYING';
+          onStateChange('PLAYING');
+      }
+  }, [onStateChange, onAttemptChange, reset]);
+  
+  const handleInputDown = useCallback((e: MouseEvent | TouchEvent | KeyboardEvent) => {
+    if (gameState.current === 'PAUSED') return;
+    if (e.type === 'keydown' && isPracticeRef.current) {
+        const k = (e as KeyboardEvent).code;
+        if (k === 'KeyZ') { createCheckpoint(); return; }
+        if (k === 'KeyX') { removeLastCheckpoint(); return; }
+    }
+    if (e.type === 'keydown') {
+        if ((e as KeyboardEvent).code === 'Space' || (e as KeyboardEvent).code === 'ArrowUp') {
+            e.preventDefault(); 
+            if (gameState.current === 'MENU') { handleStart(); return; }
+        } else { return; }
+    }
+    if (e.type === 'mousedown' || e.type === 'touchstart') {
+        const target = e.target as HTMLElement;
+        const isInteractive = target.closest('button') || target.closest('.pointer-events-auto') || target.tagName === 'INPUT';
+        if (isInteractive && !target.closest('canvas')) { return; }
+    }
+    if (gameState.current === 'MENU') { return; }
+    if (gameState.current === 'GAMEOVER' || gameState.current === 'WON') { handleStart(); return; }
+    isHoldingInput.current = true;
+    const p = player.current;
+    if (p.mode === 'cube' && p.isGrounded) {
+        p.vy = GAME_CONFIG.JUMP_FORCE; p.isGrounded = false; audioService.playJump();
+    } else if (p.mode === 'ball' && p.isGrounded) {
+        p.gravityInverted = !p.gravityInverted; p.isGrounded = false; audioService.playJump(); 
+        spawnBallGravityParticles(p.x + p.width/2, p.y + p.height/2); ballScaleRef.current = 0.8; 
+    }
+  }, [handleStart, createCheckpoint, removeLastCheckpoint, spawnBallGravityParticles]);
+  
+  const handleInputUp = useCallback(() => { isHoldingInput.current = false; }, []);
+
+  useEffect(() => {
+      const handleCustom = (e: CustomEvent) => {
+          if (e.detail === 'checkpoint') createCheckpoint();
+          if (e.detail === 'remove_checkpoint') removeLastCheckpoint();
+      };
+      window.addEventListener('game-action', handleCustom as EventListener);
+      return () => window.removeEventListener('game-action', handleCustom as EventListener);
+  }, [createCheckpoint, removeLastCheckpoint]);
+
+  useEffect(() => {
+    window.addEventListener('mousedown', handleInputDown);
+    window.addEventListener('touchstart', handleInputDown);
+    window.addEventListener('keydown', handleInputDown);
+    window.addEventListener('mouseup', handleInputUp);
+    window.addEventListener('touchend', handleInputUp);
+    window.addEventListener('keyup', handleInputUp);
+    return () => {
+      window.removeEventListener('mousedown', handleInputDown);
+      window.removeEventListener('touchstart', handleInputDown);
+      window.removeEventListener('keydown', handleInputDown);
+      window.removeEventListener('mouseup', handleInputUp);
+      window.removeEventListener('touchend', handleInputUp);
+      window.removeEventListener('keyup', handleInputUp);
+    };
+  }, [handleInputDown, handleInputUp]);
+
+  return <canvas ref={canvasRef} width={window.innerWidth} height={window.innerHeight} className="block w-full h-full" style={{ cursor: 'pointer' }} />;
 };

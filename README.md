@@ -1,20 +1,56 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Neon Dash
 
-# Run and deploy your AI Studio app
+A high-octane, rhythm-based platformer clone built with **React**, **HTML5 Canvas**, and **TypeScript**. 
 
-This contains everything you need to run your app locally.
+Features custom physics, multiple game modes (Cube, Ship, Wave), level editor capabilities (via code), and a high-performance rendering engine.
 
-View your app in AI Studio: https://ai.studio/apps/drive/1jNv0P5JQUdNnRAgQYiA_Zm8kpzdT28rO
+## 🚀 Getting Started
 
-## Run Locally
+### Prerequisites
+- Node.js (v16 or higher)
+- npm or yarn
 
-**Prerequisites:**  Node.js
+### Installation
 
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/your-username/neon-dash.git
+   cd neon-dash
+   ```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+3. Run the development server:
+   ```bash
+   npm run dev
+   ```
+
+4. Open your browser to the local URL provided (usually `http://localhost:5173`).
+
+## 🛠 Tech Stack
+
+- **Framework**: React 18
+- **Language**: TypeScript
+- **Styling**: Tailwind CSS
+- **Graphics**: HTML5 Canvas API
+- **Icons**: Lucide React
+- **Build Tool**: Vite
+
+## 🎮 Game Modes
+
+- **Cube**: Tap to jump. Hold to spam jump.
+- **Ship**: Hold to fly up, release to drop.
+- **Wave**: Hold to zigzag up, release to zigzag down.
+
+## 📦 Deployment
+
+This project is optimized for deployment on **Vercel**.
+
+1. Push your code to a GitHub repository.
+2. Go to [Vercel](https://vercel.com) and add a "New Project".
+3. Import your repository.
+4. Vercel will automatically detect `Vite` and configure the build settings.
+5. Click **Deploy**.

@@ -2,8 +2,81 @@
 import React, { useState, useCallback } from 'react';
 import { GameEngine } from './components/GameEngine';
 import { GameState, PlayerIconType, ShipIconType, WaveIconType } from './types';
-import { Play, RotateCcw, Trophy, Palette, X, Check, Coins, ChevronLeft, ChevronRight, FastForward, Pause, Grid, Home, LogOut, Rocket, Box, Zap } from 'lucide-react';
+import { Play, RotateCcw, Trophy, Palette, X, Check, Coins, ChevronLeft, ChevronRight, FastForward, Pause, Grid, LogOut, Rocket, Box, Zap, Gem, Plus, Trash2 } from 'lucide-react';
 import { PLAYER_COLORS, PLAYER_ICONS, LEVELS, SHIP_ICONS, WAVE_ICONS } from './constants';
+
+const IconPreview: React.FC<{ mode: 'cube' | 'ship' | 'wave'; icon: string; color: string }> = ({ mode, icon, color }) => {
+  if (mode === 'cube') {
+    return (
+      <div className="w-full h-full border-2 border-white relative flex items-center justify-center overflow-hidden transition-colors" style={{ backgroundColor: color }}>
+        {icon === 'face' && (
+            <>
+                <div className="absolute top-[30%] left-[20%] w-[15%] h-[15%] bg-black"></div>
+                <div className="absolute top-[30%] right-[20%] w-[15%] h-[15%] bg-black"></div>
+                <div className="absolute top-[60%] left-[20%] w-[60%] h-[10%] bg-black"></div>
+                <div className="absolute top-[55%] left-[20%] w-[10%] h-[10%] bg-black"></div>
+                <div className="absolute top-[55%] right-[20%] w-[10%] h-[10%] bg-black"></div>
+            </>
+        )}
+        {icon === 'creeper' && (
+            <>
+                <div className="absolute top-[20%] left-[20%] w-[15%] h-[15%] bg-black"></div> {/* Left Eye */}
+                <div className="absolute top-[20%] right-[20%] w-[15%] h-[15%] bg-black"></div> {/* Right Eye */}
+                <div className="absolute top-[35%] left-[37.5%] w-[25%] h-[25%] bg-black"></div> {/* Nose */}
+                <div className="absolute top-[50%] left-[30%] w-[10%] h-[30%] bg-black"></div> {/* Mouth L */}
+                <div className="absolute top-[50%] right-[30%] w-[10%] h-[30%] bg-black"></div> {/* Mouth R */}
+                <div className="absolute top-[60%] left-[40%] w-[20%] h-[10%] bg-black"></div> {/* Mouth Bottom */}
+            </>
+        )}
+        {icon === 'lines' && (
+            <>
+                <div className="absolute top-[35%] left-0 w-full h-[10%] bg-black/50"></div>
+                <div className="absolute top-[55%] left-0 w-full h-[10%] bg-black/50"></div>
+            </>
+        )}
+        {icon === 'dot' && (
+            <div className="w-[35%] h-[35%] bg-black/40 rounded-full"></div>
+        )}
+        {icon === 'cross' && (
+             <div className="text-black/50 font-bold leading-none flex items-center justify-center w-full h-full text-[150%]">×</div>
+        )}
+        {/* Default is clean */}
+      </div>
+    );
+  }
+  
+  if (mode === 'ship') {
+     return (
+        <div className="relative w-full h-full flex items-center justify-center">
+            <svg viewBox="0 0 40 25" className="w-full h-full drop-shadow-md overflow-visible" style={{display: 'block'}}>
+                <path fill="#fff" stroke="#94a3b8" strokeWidth="2" d={
+                    icon === 'default' ? "M5 20 L35 20 L30 5 L10 5 Z" :
+                    icon === 'fighter' ? "M2 20 L38 20 L30 2 L12 2 M12 20 L8 25 L15 20" :
+                    icon === 'shark' ? "M5 20 Q20 -5 35 20 M10 10 L15 0 L20 10" :
+                    icon === 'saucer' ? "M5 15 A 15 10 0 0 0 35 15 L 35 15 Q 20 0 5 15" : "M5 20 L35 20 L30 5 L10 5 Z"
+                } />
+            </svg>
+            <div className="absolute top-[30%] left-[30%] w-[40%] h-[40%] border border-white" style={{ backgroundColor: color }}></div>
+        </div>
+    );
+  }
+
+  if (mode === 'wave') {
+      return (
+        <div className="relative w-full h-full flex items-center justify-center">
+             <svg viewBox="0 0 20 20" className="w-full h-full drop-shadow-md overflow-visible" style={{display: 'block'}}>
+                <path fill={color} stroke="#fff" strokeWidth="1.5" d={
+                    icon === 'default' ? "M2 10 L18 10 L10 18 Z" : 
+                    icon === 'dart' ? "M2 5 L18 10 L2 15 L6 10 Z" : 
+                    icon === 'saw' ? "M2 5 L5 2 L10 5 L15 2 L18 10 L15 18 L10 15 L5 18 L2 10 Z" : 
+                    icon === 'shuriken' ? "M10 0 L15 10 L10 20 L5 10 Z" : "M2 10 L18 10 L10 18 Z"
+                } transform="rotate(-45 10 10)" /> 
+            </svg>
+        </div>
+      );
+  }
+  return null;
+};
 
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>('MENU');
@@ -20,6 +93,9 @@ const App: React.FC = () => {
   const [isCustomizing, setIsCustomizing] = useState(false);
   const [customizationTab, setCustomizationTab] = useState<'cube' | 'ship' | 'wave'>('cube');
   
+  // Practice Mode State
+  const [isPracticeMode, setIsPracticeMode] = useState(false);
+  
   // Modal State
   const [showLevelSelector, setShowLevelSelector] = useState(false);
 
@@ -27,7 +103,6 @@ const App: React.FC = () => {
 
   // Throttled Progress Update to avoid excessive re-renders
   const handleProgressChange = useCallback((newProgress: number) => {
-      // Only update state if change is significant (>1%) or if 100%
       setProgress((prev) => {
           if (newProgress === 100) return 100;
           if (Math.abs(newProgress - prev) >= 1) return newProgress;
@@ -39,6 +114,7 @@ const App: React.FC = () => {
       if (currentLevelIndex < LEVELS.length - 1) {
           setCurrentLevelIndex(prev => prev + 1);
           setGameState('MENU'); // Go to menu of next level
+          setIsPracticeMode(false);
       }
   };
 
@@ -48,12 +124,14 @@ const App: React.FC = () => {
       } else {
           setCurrentLevelIndex(prev => (prev < LEVELS.length - 1 ? prev + 1 : 0));
       }
+      setIsPracticeMode(false);
   };
   
   const handleSelectLevel = (index: number) => {
       setCurrentLevelIndex(index);
       setShowLevelSelector(false);
       setGameState('MENU');
+      setIsPracticeMode(false);
   };
 
   const togglePause = () => {
@@ -64,6 +142,10 @@ const App: React.FC = () => {
       }
   };
 
+  const dispatchAction = (action: string) => {
+      window.dispatchEvent(new CustomEvent('game-action', { detail: action }));
+  };
+  
   return (
     <div className="relative w-screen h-screen bg-slate-900 overflow-hidden select-none font-sans">
       {/* Game Layer */}
@@ -71,7 +153,10 @@ const App: React.FC = () => {
         <GameEngine 
             levelData={currentLevel.data}
             gameState={gameState}
-            onStateChange={setGameState} 
+            isPracticeMode={isPracticeMode}
+            onStateChange={(newState) => {
+                setGameState(newState);
+            }} 
             onAttemptChange={setAttempt}
             onProgressChange={handleProgressChange}
             onCoinCollect={setHasCoin}
@@ -88,28 +173,44 @@ const App: React.FC = () => {
         {/* Top Bar */}
         <div className="flex justify-between items-start pointer-events-auto w-full">
              <div className="flex flex-col">
-                <h1 className="text-2xl font-black text-cyan-400 drop-shadow-[0_0_10px_rgba(34,211,238,0.8)] tracking-wider">NEON DASH</h1>
-                <span className="text-xs text-cyan-200/60 uppercase tracking-widest">Attempt {attempt}</span>
+                <h1 className="text-2xl font-black text-cyan-400 drop-shadow-[0_0_10px_rgba(34,211,238,0.8)] tracking-wider">
+                    NEON DASH
+                </h1>
+                <span className="text-xs text-cyan-200/60 uppercase tracking-widest">
+                    Attempt {attempt}
+                </span>
              </div>
              
+             {/* Practice Mode Indicator */}
+             {isPracticeMode && (
+                 <div className="absolute left-1/2 -translate-x-1/2 top-20 bg-green-900/50 border border-green-500/50 px-3 py-1 rounded-full flex items-center gap-2">
+                     <Gem size={14} className="text-green-400" />
+                     <span className="text-xs font-bold text-green-300 uppercase tracking-widest">Practice Mode</span>
+                 </div>
+             )}
+             
              {/* Center Top: Coin Status */}
-             <div className={`absolute left-1/2 -translate-x-1/2 top-6 flex items-center gap-2 px-4 py-2 rounded-full border-2 transition-all duration-500 ${hasCoin ? 'bg-yellow-500/20 border-yellow-400 text-yellow-300 scale-110 shadow-[0_0_20px_rgba(250,204,21,0.5)]' : 'bg-slate-800/50 border-slate-600 text-slate-500'}`}>
-                <Coins size={20} className={hasCoin ? 'animate-bounce' : ''} />
-                <span className="font-bold text-sm">{hasCoin ? '1/1' : '0/1'}</span>
-             </div>
+             {gameState !== 'MENU' && (
+                 <div className={`absolute left-1/2 -translate-x-1/2 top-6 flex items-center gap-2 px-4 py-2 rounded-full border-2 transition-all duration-500 ${hasCoin ? 'bg-yellow-500/20 border-yellow-400 text-yellow-300 scale-110 shadow-[0_0_20px_rgba(250,204,21,0.5)]' : 'bg-slate-800/50 border-slate-600 text-slate-500'}`}>
+                    <Coins size={20} className={hasCoin ? 'animate-bounce' : ''} />
+                    <span className="font-bold text-sm">{hasCoin ? '1/1' : '0/1'}</span>
+                 </div>
+             )}
 
              {/* Right Top: Controls */}
              <div className="flex gap-4">
                  {/* Progress Bar (Visible mostly when playing) */}
-                 <div className="w-48 md:w-64 h-8 bg-slate-800/80 border-2 border-slate-600 rounded-full overflow-hidden backdrop-blur-sm relative hidden md:block">
-                     <div 
-                        className="h-full bg-gradient-to-r from-green-400 to-cyan-400 transition-all duration-100 ease-linear"
-                        style={{ width: `${progress}%` }}
-                     />
-                     <span className="absolute inset-0 flex items-center justify-center text-xs font-bold text-white drop-shadow-md">
-                         {progress}%
-                     </span>
-                 </div>
+                 {gameState === 'PLAYING' && (
+                     <div className="w-48 md:w-64 h-8 bg-slate-800/80 border-2 border-slate-600 rounded-full overflow-hidden backdrop-blur-sm relative hidden md:block">
+                        <div 
+                           className="h-full bg-gradient-to-r from-green-400 to-cyan-400 transition-all duration-100 ease-linear"
+                           style={{ width: `${progress}%` }}
+                        />
+                        <span className="absolute inset-0 flex items-center justify-center text-xs font-bold text-white drop-shadow-md">
+                            {progress}%
+                        </span>
+                     </div>
+                 )}
                  
                  {gameState === 'PLAYING' && (
                      <button onClick={togglePause} className="p-2 bg-slate-800/80 border-2 border-slate-500 rounded-lg hover:bg-slate-700 text-white transition-colors">
@@ -118,6 +219,26 @@ const App: React.FC = () => {
                  )}
              </div>
         </div>
+        
+        {/* Practice Mode Controls (Bottom) */}
+        {gameState === 'PLAYING' && isPracticeMode && (
+             <div className="absolute bottom-6 left-6 flex gap-4 pointer-events-auto opacity-50 hover:opacity-100 transition-opacity">
+                 <button 
+                    className="w-16 h-16 rounded-full bg-green-600/50 border-2 border-green-400 flex items-center justify-center text-white active:scale-95 transition-transform"
+                    onClick={(e) => { e.stopPropagation(); dispatchAction('checkpoint'); }}
+                    title="Add Checkpoint (Z)"
+                 >
+                     <Plus size={32} />
+                 </button>
+                 <button 
+                    className="w-16 h-16 rounded-full bg-red-600/50 border-2 border-red-400 flex items-center justify-center text-white active:scale-95 transition-transform"
+                    onClick={(e) => { e.stopPropagation(); dispatchAction('remove_checkpoint'); }}
+                    title="Remove Checkpoint (X)"
+                 >
+                     <Trash2 size={28} />
+                 </button>
+             </div>
+        )}
 
         {/* Center Messages / Overlays */}
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -142,7 +263,7 @@ const App: React.FC = () => {
                         <div 
                             className="flex justify-center cursor-pointer hover:scale-110 transition-transform active:scale-95"
                             onClick={(e) => {
-                                // The global listener handles the start
+                                setGameState('PLAYING');
                             }}
                         >
                             <Play className="w-16 h-16 text-cyan-400 fill-cyan-400/20 animate-bounce" />
@@ -183,6 +304,16 @@ const App: React.FC = () => {
                         
                         <button 
                             onClick={() => {
+                                setIsPracticeMode(!isPracticeMode);
+                                setGameState('PLAYING');
+                            }}
+                            className={`w-full py-3 rounded-lg font-bold text-white uppercase tracking-wider flex items-center justify-center gap-2 ${isPracticeMode ? 'bg-green-600 hover:bg-green-500' : 'bg-slate-700 hover:bg-slate-600'}`}
+                        >
+                            <Gem size={20} /> {isPracticeMode ? 'Normal Mode' : 'Practice Mode'}
+                        </button>
+                        
+                        <button 
+                            onClick={() => {
                                 setGameState('GAMEOVER'); // Trigger restart logic via crash screen shortcut or simpler reset
                             }}
                             className="w-full py-3 bg-slate-700 hover:bg-slate-600 rounded-lg font-bold text-white uppercase tracking-wider flex items-center justify-center gap-2"
@@ -198,7 +329,9 @@ const App: React.FC = () => {
                                 <Grid size={20} /> Levels
                             </button>
                             <button 
-                                onClick={() => setGameState('MENU')}
+                                onClick={() => {
+                                    setGameState('MENU');
+                                }}
                                 className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 rounded-lg font-bold text-red-400 border border-red-500/30 uppercase tracking-wider flex items-center justify-center gap-2"
                             >
                                 <LogOut size={20} /> Menu
@@ -277,44 +410,8 @@ const App: React.FC = () => {
                             <div className="absolute inset-0 opacity-20" style={{backgroundImage: 'linear-gradient(#fff 1px, transparent 1px), linear-gradient(90deg, #fff 1px, transparent 1px)', backgroundSize: '10px 10px'}}></div>
                             
                             {/* Dynamic Preview */}
-                            <div className="relative z-10 scale-150">
-                                {customizationTab === 'cube' && (
-                                    <div className="w-8 h-8 border-2 border-white relative flex items-center justify-center" style={{ backgroundColor: playerColor }}>
-                                        {playerIcon === 'face' && <div className="absolute inset-0 opacity-50 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMCAxMCI+PHBhdGggZD0iTTIgMnYyaDJWMmgtMnptNCAwdjJoMlYyaC0yem0tMiA0djEuNWg2VjZINC41eiIgZmlsbD0iIzAwMCIvPjwvc3ZnPg==')] bg-cover"></div>}
-                                        {playerIcon === 'creeper' && <div className="absolute inset-0 opacity-50 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMCAxMCI+PHBhdGggZD0iTTEuNSAyLjVIMy41VjQuNUgxLjV6bTUgMEg4LjVWNC41SDYuNXpNNSA0djNIN3YtLjVINlY1SDV6bS0xIDEuNUgzdjIuNUg0di0yeiIgZmlsbD0iIzAwMCIvPjwvc3ZnPg==')] bg-cover"></div>}
-                                        {playerIcon === 'lines' && <div className="absolute inset-0 opacity-50 flex flex-col justify-center gap-1"><div className="h-[20%] bg-black w-full"></div><div className="h-[20%] bg-black w-full"></div></div>}
-                                        {playerIcon === 'dot' && <div className="w-3 h-3 bg-black/50 rounded-full"></div>}
-                                        {playerIcon === 'cross' && <div className="text-black/50 text-xl font-bold leading-none">×</div>}
-                                        {playerIcon === 'default' && <div className="w-4 h-4 bg-black/50"></div>}
-                                    </div>
-                                )}
-                                {customizationTab === 'ship' && (
-                                    <div className="relative w-12 h-8">
-                                        {/* Ship Chassis */}
-                                        <svg viewBox="0 0 40 25" className="absolute inset-0 w-full h-full drop-shadow-md">
-                                            <path fill="#fff" stroke="#94a3b8" strokeWidth="1" d={
-                                                shipIcon === 'default' ? "M5 20 L35 20 L30 5 L10 5 Z" :
-                                                shipIcon === 'fighter' ? "M2 20 L38 20 L30 2 L12 2 M12 20 L8 25 L15 20" :
-                                                shipIcon === 'shark' ? "M5 20 Q20 -5 35 20 M10 10 L15 0 L20 10" :
-                                                shipIcon === 'saucer' ? "M5 15 A 15 10 0 0 0 35 15 L 35 15 Q 20 0 5 15" : "M5 20 L35 20 L30 5 L10 5 Z"
-                                            } />
-                                        </svg>
-                                        {/* Mini Cube Inside */}
-                                        <div className="absolute top-[8px] left-[12px] w-5 h-5 border border-white" style={{ backgroundColor: playerColor }}></div>
-                                    </div>
-                                )}
-                                {customizationTab === 'wave' && (
-                                    <div className="relative w-8 h-8">
-                                        <svg viewBox="0 0 20 20" className="w-full h-full drop-shadow-md overflow-visible">
-                                            <path fill={playerColor} stroke="#fff" strokeWidth="1" d={
-                                                waveIcon === 'default' ? "M2 10 L18 10 L10 18 Z" : // Triangle pointing down/right ish
-                                                waveIcon === 'dart' ? "M2 5 L18 10 L2 15 L6 10 Z" : // Dart
-                                                waveIcon === 'saw' ? "M2 5 L5 2 L10 5 L15 2 L18 10 L15 18 L10 15 L5 18 L2 10 Z" : // Saw
-                                                waveIcon === 'shuriken' ? "M10 0 L15 10 L10 20 L5 10 Z" : "M2 10 L18 10 L10 18 Z"
-                                            } transform="rotate(-45 10 10)" /> 
-                                        </svg>
-                                    </div>
-                                )}
+                            <div className="relative z-10 w-12 h-12 scale-150">
+                                <IconPreview mode={customizationTab} icon={customizationTab === 'cube' ? playerIcon : customizationTab === 'ship' ? shipIcon : waveIcon} color={playerColor} />
                             </div>
                         </div>
                     </div>
@@ -324,13 +421,22 @@ const App: React.FC = () => {
                         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 text-left">Select Icon</h3>
                         <div className="grid grid-cols-3 gap-2 max-h-[150px] overflow-y-auto p-1">
                             {customizationTab === 'cube' && PLAYER_ICONS.map(icon => (
-                                <button key={icon.id} onClick={() => setPlayerIcon(icon.id as PlayerIconType)} className={`p-2 rounded-lg border-2 text-xs font-bold uppercase transition-all ${playerIcon === icon.id ? 'border-cyan-400 bg-cyan-900/30 text-white' : 'border-slate-700 bg-slate-800 text-slate-400 hover:border-slate-500'}`}>{icon.label}</button>
+                                <button key={icon.id} onClick={() => setPlayerIcon(icon.id as PlayerIconType)} className={`p-2 rounded-lg border-2 transition-all flex flex-col items-center gap-1 ${playerIcon === icon.id ? 'border-cyan-400 bg-cyan-900/30' : 'border-slate-700 bg-slate-800 hover:border-slate-500'}`}>
+                                    <div className="w-6 h-6"><IconPreview mode="cube" icon={icon.id} color={playerColor} /></div>
+                                    <span className="text-[10px] font-bold uppercase text-slate-300">{icon.label}</span>
+                                </button>
                             ))}
                             {customizationTab === 'ship' && SHIP_ICONS.map(icon => (
-                                <button key={icon.id} onClick={() => setShipIcon(icon.id as ShipIconType)} className={`p-2 rounded-lg border-2 text-xs font-bold uppercase transition-all ${shipIcon === icon.id ? 'border-pink-400 bg-pink-900/30 text-white' : 'border-slate-700 bg-slate-800 text-slate-400 hover:border-slate-500'}`}>{icon.label}</button>
+                                <button key={icon.id} onClick={() => setShipIcon(icon.id as ShipIconType)} className={`p-2 rounded-lg border-2 transition-all flex flex-col items-center gap-1 ${shipIcon === icon.id ? 'border-pink-400 bg-pink-900/30' : 'border-slate-700 bg-slate-800 hover:border-slate-500'}`}>
+                                    <div className="w-8 h-6"><IconPreview mode="ship" icon={icon.id} color={playerColor} /></div>
+                                    <span className="text-[10px] font-bold uppercase text-slate-300">{icon.label}</span>
+                                </button>
                             ))}
                             {customizationTab === 'wave' && WAVE_ICONS.map(icon => (
-                                <button key={icon.id} onClick={() => setWaveIcon(icon.id as WaveIconType)} className={`p-2 rounded-lg border-2 text-xs font-bold uppercase transition-all ${waveIcon === icon.id ? 'border-blue-400 bg-blue-900/30 text-white' : 'border-slate-700 bg-slate-800 text-slate-400 hover:border-slate-500'}`}>{icon.label}</button>
+                                <button key={icon.id} onClick={() => setWaveIcon(icon.id as WaveIconType)} className={`p-2 rounded-lg border-2 transition-all flex flex-col items-center gap-1 ${waveIcon === icon.id ? 'border-blue-400 bg-blue-900/30' : 'border-slate-700 bg-slate-800 hover:border-slate-500'}`}>
+                                    <div className="w-6 h-6"><IconPreview mode="wave" icon={icon.id} color={playerColor} /></div>
+                                    <span className="text-[10px] font-bold uppercase text-slate-300">{icon.label}</span>
+                                </button>
                             ))}
                         </div>
                     </div>
@@ -385,7 +491,7 @@ const App: React.FC = () => {
                             Secret Coin Found!
                         </div>
                     )}
-
+                    
                     <p className="text-green-200 mb-6 font-mono">Attempts: {attempt}</p>
                     
                     <div className="flex flex-col gap-3">
@@ -408,9 +514,11 @@ const App: React.FC = () => {
         </div>
         
         {/* Footer info */}
-        <div className="text-center text-white/10 text-xs font-mono pointer-events-auto">
-           Mugen Style v1.3
-        </div>
+        {gameState === 'MENU' && (
+            <div className="text-center text-white/10 text-xs font-mono pointer-events-auto">
+               Mugen Style v1.3
+            </div>
+        )}
       </div>
     </div>
   );
